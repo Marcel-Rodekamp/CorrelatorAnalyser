@@ -33,8 +33,7 @@ import fitter
 import fitModels
 
 
-def testData(
-    T: float, Nt: int, Nconf: int, As_f: np.ndarray, Es_f: np.ndarray, As_b: np.ndarray, Es_b: np.ndarray, hasStN: bool = False) -> np.ndarray:
+def testData(T: float, Nt: int, Nconf: int, As_f: np.ndarray, Es_f: np.ndarray, As_b: np.ndarray, Es_b: np.ndarray, hasStN: bool = False) -> np.ndarray:
     r"""
         This generates a set of artificial data points mimicking a correlation function
         \f[
@@ -118,6 +117,11 @@ def main(CLIargs: argparse.Namespace) -> None:
     """
     global logger
 
+    # ##########################################################
+    # Setting up the interface
+    # ##########################################################
+
+    # print the provided CLI arguments
     logger.info(CLIargs)
 
     # define the Cache folder in which we cache the fit results
@@ -131,8 +135,12 @@ def main(CLIargs: argparse.Namespace) -> None:
 
     # make sure that the folder exists
     ReportFolder.mkdir(parents=True, exist_ok=True)
+
+    # ##########################################################
+    # Data generation
+    # ##########################################################
     
-    # Create fake data
+    # Create fake data, this could be reading in etc.
     # - corrData: np.array(Nconf,Nt), sampled data, normally distributed and uncorrelated
     # - corrUnderlying: np.array(Nt), underlying true values from which we sampled
     # - abscissa: np.arrange(Nt), the array which we can use for plotting
@@ -144,29 +152,121 @@ def main(CLIargs: argparse.Namespace) -> None:
         hasStN = CLIargs.StN,
     )
 
-    # estimate data
+    # ##########################################################
+    # Data Estimation
+    # ##########################################################
+
+    # Either bootstrap or compute via standard deviation
     if CLIargs.Nbst is None:
         # if no bootstrap is desired we can simplify using gvar which automatically
         Cest = corrData.mean(axis=0)
         Cerr = corrData.std(axis=0)/np.sqrt(CLIargs.Nconf)
-        Cgvar = gv.gvar(Cest,Cerr)
     else:
         bootstrapIDs = np.random.randint(
             0, CLIargs.Nconf, size = (CLIargs.Nbst, CLIargs.Nconf)
         )
 
         Cbst = np.zeros( (CLIargs.Nbst, CLIargs.Nt ) )
+        Cbrr = np.zeros( (CLIargs.Nbst, CLIargs.Nt ) )
         for nbst in tqdm(range(CLIargs.Nbst), desc = 'Bootstrapping Correlator'):
             sample = corrData[ bootstrapIDs[nbst] ]
             Cbst[nbst] = np.mean( sample,axis=0 )
+            Cbrr[nbst] = np.std( sample,axis=0 )
         Cest = np.mean(Cbst,axis=0)
         Cerr = np.std(Cbst,axis=0)
-        Cgvar = gv.gvar(Cest,Cerr)
     # end else Nbst
     
-    # plot the data
+    # ##########################################################
+    # Perform fits
+    # ##########################################################
+    
+    # Here we set up various fits and execute them according to some rules that we define 
+    # for the specific data. 
+    # We explicitly make use of the prior and fit-models from fitModels.py.
+    # If none of those fits your problem/desire you eventually have to create them yourself
+    # simply by inheriting from the provided base-class
+
+    # Collect the fit results in
+    fitResultList = []
+
+    # maximally allowed number of states
+    maxStates = 2
+    
+    # define a fit endpoint, this is usually defined by a signal to noise point from the data. 
+    te = 22
+
+    # iterate over possible states
+    for ns in range(1,maxStates+1):
+        # Create the fitter for an ns-state fit:
+        
+        # 1. Define a raw fitter
+        fit = fitter.Fitter("ExponentialFitter")
+
+        # 2. Add a ns-state fit model. We want the energies in lattice units thus we add
+        #    the lattice spacing delta (default = 1 if not given) into this. 
+        #    Alternatively, the abscissa could be multiplied by delta in the first place.
+        fit = fit.setFitModel(fitModels.SimpleSumOfExponentialsModel(Nstates=ns,delta=delta)) \
+
+        # 3.1 Add a prior to the fit model
+        fit = fit.setPrior(fitModels.SimpleSumOfExponentialsFlatPrior(Nstates=ns))
+        
+        # 3.2 or add start parameter to the fit model
+        #fit = fit.setP0(fitModels.SimpleSumOfExponentialsP0(Nstates=ns))
+
+        # 4. Don't do a correlated fit (there are no correlations in the testData) 
+        #    default = True -> This requires the covariance in ordinate_err
+        fit = fit.setCorrelated(False)
+
+        # 5. Turn on bootstrapped fits. This requires the bootstrap samples in ordinate
+        #    default = False
+        fit = fit.setBootstrapped(CLIargs.Nbst)
+
+        # iterate over starting point such that at least a point per parameter + 2 exists 
+        # excluding the t=0 term
+        for ts in np.arange( 1, te - 2*ns - 2 ):
+            # perform the fit
+            # We could also provide Ccov instead of Cerr to utilize a chi^2 with correlations
+            #fitRes = fit( abscissa[ts:te], Cest[ts:te], Cerr[ts:te], createCopy = True )
+            # alternatively, we just provide the bst samples and the covariance/uncertainty
+            # is automatically computed
+            fitRes = fit( abscissa[ts:te], Cbst[:,ts:te], Cerr[ts:te], createCopy = True )
+            # We can even provide a (co)variance per bootstrap sample
+            #fitRes = fit( abscissa[ts:te], Cbst[:,ts:te], Cbrr[:,ts:te], createCopy = True )
+
+            
+            # append the fit result
+            fitResultList.append(fitRes)
+
+            # report to terminal
+            logger.info(f"f{fitRes.report()}")
+
+    # sort the list, such that the best fit comes first
+    fitResultList.sort(key=lambda x: x.AIC())
+
+    
+    # ##########################################################
+    # Plotting and Reporting
+    # ##########################################################
+
+    # dictionary of fit results with
+    # "bst": { "A0":array,"A1":array,..., "E0":array,"E1":array,...} # if bootstrapped fit
+    # "est": { "A0":float,"A1":float,..., "E0":float,"E1":float,...} 
+    # "err": { "A0":float,"A1":float,..., "E0":float,"E1":float,...} 
+    bestParams = fitResultList[0].bestParameter()
+
+    msg = "Best Fit Result:\n"
+    for key in bestParams["est"].keys():
+        msg+=f"\t\t\t* {key}: {gv.gvar(bestParams['est'][key], bestParams['err'][key])}\n"
+    logger.info(msg)
+    
+    # We provide a set of basic plotting routines that also return the plt.Figure, and axis
+    # this way we can modify them after the basic plots have been done. 
+
+    # #####################
+    # 1. Plot the raw correlator data
+    # #####################
     fig, ax = plotting.plotCorrelator(
-        C = Cgvar,
+        C = gv.gvar(Cest,Cerr),
         abscissa = abscissa,
         color = plotting.style.MAIN_COLORS['primary'],
         connectDots = True,
@@ -179,44 +279,40 @@ def main(CLIargs: argparse.Namespace) -> None:
         label = "Underlying"
     )
     ax.legend()
-
+    
+    # simply save the figure into the report folder
     fig.savefig( ReportFolder/"correlator.pdf" )
 
-    fit = fitter.Fitter("ExponentialFitter") \
-            .setFitModel(fitModels.SimpleSumOfExponentialsModel(Nstates=2)) \
-            .setPrior(fitModels.SimpleSumOfExponentialsFlatPrior(Nstates=2))
-
-    fit_1 = fit( abscissa[:], Cgvar[:], createCopy = True )
-    fit_2 = fit( abscissa[5:22], Cgvar[5:22], createCopy = True )
-
-    logger.info(f"fit_1={fit_1.report()}")
-    logger.info(f"fit_2={fit_2.report()}")
-
+    # #####################
+    # 2. Plot the fit result
+    # #####################
+    
+    # First plot the raw data once again to compare the best fit
     fig, ax = plotting.plotCorrelator(
-        C = Cgvar,
+        C = gv.gvar(Cest,Cerr),
         abscissa = abscissa,
         color = plotting.style.MAIN_COLORS['primary'],
         connectDots = False,
         label = "Sampled Data"
     )
+    
+    # Now finally plot the best 5 fits. 
+    # For a comprehensive report you might want to fit all, but not in the same file. 
+    # The legend can become quite cluttered for many fits
+    for fitID,fit in enumerate(fitResultList[:5]):
+        # We can add a textbox below the plot for the best fit
+        # The best fit is the first element of the list as by our sorting above
+        putFitReport = fitID == 0
 
-    fig, ax = plotting.plotFit(
-        fit = fit_1,
-        figAxTuple = (fig,ax),
-        plotData = False,
-        label = rf"{fit_1.short()}",
-        color = plotting.style.MAIN_COLORS['complementary'],
-        putFitReport = fit_1.AIC() < fit_2.AIC()
-    )
-
-    fig, ax = plotting.plotFit(
-        fit = fit_2,
-        figAxTuple = (fig,ax),
-        plotData = False,
-        label = rf"{fit_2.short()}",
-        color = plotting.style.MAIN_COLORS['highlight'],
-        putFitReport = fit_1.AIC() > fit_2.AIC()
-    )
+        fig, ax = plotting.plotFit(
+            fit = fit,
+            figAxTuple = (fig,ax),
+            plotData = False,
+            label = rf"{fit.short()}",
+            putFitReport = putFitReport,
+            # the best fit should be plotted over all others
+            zorder = 5 - fitID
+        )
 
     ax.legend()
 

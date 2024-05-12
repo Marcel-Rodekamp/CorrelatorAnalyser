@@ -37,7 +37,7 @@ def plotCorrelator(
         abscissa = np.arange( C.shape[0] )
 
     # define the marker and check if the dots should be connected
-    fmt = '^'
+    fmt = '.'
     if connectDots:
         fmt+=':'
 
@@ -65,18 +65,13 @@ def plotCorrelator(
 
     return fig, ax
 
-def plotFit(
-    fit: Fitter, 
-    figAxTuple:  (plt.Figure, plt.Axes) = None, 
-    plotData: bool = True,
-    title:str = '',
-    Nplot = 100,
-    ylabel: str = r"$C(\tau)$", 
-    xlabel: str = r"$\tau$", 
-    label: str = None, 
-    color = None,
-    putFitReport: bool = True,
-) -> (plt.Figure, plt.Axes):
+def plotFit(fit: Fitter, figAxTuple:  (plt.Figure, plt.Axes) = None, plotData: bool = True, title:str = '', Nplot = 100, ylabel: str = r"$C(\tau)$", xlabel: str = r"$\tau$", label: str = None, color = None, putFitReport: bool = True, zorder=0) -> (plt.Figure, plt.Axes):
+    r"""
+        Plot fit restults.
+
+        Arguments:
+
+    """
 
     # retrieve the plt.Figure,plt.Axes
     if figAxTuple is None:
@@ -85,6 +80,7 @@ def plotFit(
         fig = figAxTuple[0]
         ax  = figAxTuple[1] 
 
+    # potentially plot the data we fitted against
     if plotData:
         fig,ax=plotCorrelator(
             C = fit.fitResult.y,
@@ -98,42 +94,52 @@ def plotFit(
         )
 
 
+    # evaluate the model (we could provide an abscissa or let it auto compute here)
+    # abscissa is a np.array
+    # ordinate is a np.array of gv.gvars
     abscissa, ordinate = fit.evalModel()
 
+    # plot the central value of the fit
     line, = ax.plot(
         abscissa, gv.mean(ordinate), '-',
         color = color,
-        label = label
+        label = label,
+        zorder = zorder
     )
 
+    # plot the 1-sigma confidence interval
     ax.fill_between(
         abscissa, 
         gv.mean(ordinate) + gv.sdev(ordinate),
         gv.mean(ordinate) - gv.sdev(ordinate),
         color = line.get_color(),
-        alpha = 0.4
+        alpha = 0.4,
+        zorder = zorder
     )
 
+    # plot the 2-sigma confidence interval
     ax.fill_between(
         abscissa, 
         gv.mean(ordinate) + 2*gv.sdev(ordinate),
         gv.mean(ordinate) - 2*gv.sdev(ordinate),
         color = line.get_color(),
-        alpha = 0.2
+        alpha = 0.2,
+        zorder = zorder
     )
 
-
+    # potentially ad a text-box below the plot which summarizes the fit result
     if putFitReport:
         bbox_props = dict(boxstyle="round,pad=0.3", fc="white", ec="black", lw=2, alpha=0.7)
         text = fit.report()
 
         ax.text(
-            0.5, -0.6, 
+            0.5, -0.1, 
             text,
             ha='center',
-            fontsize = 14,
+            va='top',
+            fontsize = 10,
             bbox=bbox_props,
-            transform=ax.transAxes
+            transform=ax.transAxes,
         )
     return fig, ax
 

@@ -38,7 +38,7 @@ class FitModelBase(object):
 
 class PriorBase(object):
     @abstractmethod
-    def __call__(self):
+    def __call__(self, nbst = None):
         raise NotImplementedError("Trying to call abstractmethod __call__ of PriorBase")
 
     @abstractmethod
@@ -55,8 +55,9 @@ class PriorBase(object):
 #########################################################################################
 
 class SimpleSumOfExponentialsModel(FitModelBase): 
-    def __init__(self, Nstates):
+    def __init__(self, Nstates, delta = 1):
         self.Nstates = Nstates
+        self.delta = delta
 
     def __call__(self,tau:np.ndarray, p:dict) -> np.ndarray:
         r"""
@@ -76,7 +77,7 @@ class SimpleSumOfExponentialsModel(FitModelBase):
         out = np.zeros_like(tau, dtype = object)
 
         for n in range(self.Nstates):
-            out += p[f"A{n}"] * np.exp( - tau * p[f"E{n}"] )
+            out += p[f"A{n}"] * np.exp( - tau * p[f"E{n}"] * self.delta )
 
         return out
 
@@ -88,12 +89,29 @@ class SimpleSumOfExponentialsFlatPrior(PriorBase):
         self.Nstates = Nstates
         self.repr = repr
 
-    def __call__(self) -> gv.BufferDict:
+    def __call__(self, nbst = None) -> gv.BufferDict:
         prior = gv.BufferDict()
     
         for n in range(self.Nstates):
             prior[f"E{n}"] = gv.gvar(0, 100)
             prior[f"A{n}"] = gv.gvar(0, 100)
+
+        return prior
+
+    def __repr__(self):
+        return self.repr
+
+class SimpleSumOfExponentialsP0(PriorBase): 
+    def __init__(self, Nstates, repr = "P0"):
+        self.Nstates = Nstates
+        self.repr = repr
+
+    def __call__(self) -> gv.BufferDict:
+        prior = gv.BufferDict()
+    
+        for n in range(self.Nstates):
+            prior[f"E{n}"] = 0
+            prior[f"A{n}"] = 1
     
         return prior
 
