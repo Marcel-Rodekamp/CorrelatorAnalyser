@@ -233,6 +233,11 @@ def main(CLIargs: argparse.Namespace) -> None:
             # We can even provide a (co)variance per bootstrap sample
             #fitRes = fit( abscissa[ts:te], Cbst[:,ts:te], Cbrr[:,ts:te], createCopy = True )
 
+            # We serialize the result to disc
+            fitRes.serialize(CacheFolder/f"fit_Nstate{ns:g}_ts{ts:g}_te{te:g}.h5", overwrite=True)
+
+            # we can later read it back in with 
+            #fitRes = fitter.Fitter.deserialize(CacheFolder/f"fit_Nstate{ns:g}_ts{ts:g}_te{te:g}.h5")
             
             # append the fit result
             fitResultList.append(fitRes)
@@ -243,7 +248,6 @@ def main(CLIargs: argparse.Namespace) -> None:
     # sort the list, such that the best fit comes first
     fitResultList.sort(key=lambda x: x.AIC())
 
-    
     # ##########################################################
     # Plotting and Reporting
     # ##########################################################
@@ -317,7 +321,6 @@ def main(CLIargs: argparse.Namespace) -> None:
     ax.legend()
 
     fig.savefig( ReportFolder/"fits.pdf",bbox_inches="tight" )
-
 # end def main
 
 if __name__ == "__main__":

@@ -15,6 +15,11 @@ import lsqfit
 # in lsqfit. 
 import gvar as gv
 
+from pathlib import Path
+
+import pickle
+import h5py as h5
+
 #
 from fitModels import FitModelBase, PriorBase
 
@@ -321,4 +326,44 @@ class Fitter:
             return deepcopy(self)
         else:
             return self
+    
+    def serialize(self, file: Path, overwrite: bool = True) -> None:
+        r"""
+            Dump a Fitter to file
+        """
+        
+        handle = 'w' if overwrite else 'r+' 
 
+        with h5.File(file, handle) as h5f:
+            for key,value in self.__dict__.items():
+                if "fitResult" == key or "fitResult_bst" == key :
+                    value = np.void(gv.dumps(value))
+                elif "model" == key or "prior" == key or "p0" == key:
+                    value = np.void(pickle.dumps(value))
+
+                h5f.create_dataset(
+                    key, data = value 
+                )
+
+    @staticmethod
+    def deserialize(file: Path) -> Self:
+        r"""
+            Read a Fitter from file
+        """
+        fitter = Fitter()
+
+        with h5.File(file, 'r') as h5f:
+
+            for key in h5f.keys():
+                if "fitResult" == key or "fitResult_bst" == key :
+                    value = gv.loads(h5f[key][()])
+                elif "model" == key or "prior" == key or "p0" == key:
+                    value = pickle.loads(h5f[key][()])
+                elif "repr" == key:
+                    value = h5f[key][()].decode('utf-8')
+                else: 
+                    value = h5f[key][()]
+
+                fitter.__dict__[key] = value
+
+        return fitter
