@@ -193,7 +193,7 @@ def main(CLIargs: argparse.Namespace) -> None:
     maxStates = 2
     
     # define a fit endpoint, this is usually defined by a signal to noise point from the data. 
-    te = 22
+    te = 22 # 68
 
     # iterate over possible states
     for ns in range(1,maxStates+1):
@@ -223,14 +223,29 @@ def main(CLIargs: argparse.Namespace) -> None:
 
         # iterate over starting point such that at least a point per parameter + 2 exists 
         # excluding the t=0 term
-        for ts in np.arange( 1, te - 2*ns - 2 ):
+        for ts in np.arange( 1, te - 2*ns - 2):
             # perform the fit
-            # We could also provide Ccov instead of Cerr to utilize a chi^2 with correlations
+            # We could also provide Covariance instead of standard deviation 
+            # to utilize a chi^2 with correlations
+            # Notice, don't provide bootstrap samples if no bootstrap fits are being done
+            # otherwise a runtime error will be thrown due to no matching axes. 
             #fitRes = fit( abscissa[ts:te], Cest[ts:te], Cerr[ts:te], createCopy = True )
-            # alternatively, we just provide the bst samples and the covariance/uncertainty
-            # is automatically computed
+
+            # If bootstrapped fits are desired we need to provide a set of bootstrap samples
+            # for the central values.
+            # If a single standard devation (or covariance) is provided it will be used
+            # for all bootstrap samples (key: frozen covariance)
+            # this is typically a good approximation especially helps to stabilize 
+            # correlated fits
             fitRes = fit( abscissa[ts:te], Cbst[:,ts:te], Cerr[ts:te], createCopy = True )
-            # We can even provide a (co)variance per bootstrap sample
+
+            # If we provide a standard deviation (or covariance) for each bootstrap sample
+            # it will be used as provided.
+            # Notice, a bootstrapped fit will also fit to the central values:
+            # - fitRes.fitResult
+            # - fitRes.fitResult_bst
+            # will be filled. Typically, you want to use those as central values and determine
+            # confidence from the bootstrap.
             #fitRes = fit( abscissa[ts:te], Cbst[:,ts:te], Cbrr[:,ts:te], createCopy = True )
 
             # We serialize the result to disc
@@ -243,7 +258,7 @@ def main(CLIargs: argparse.Namespace) -> None:
             fitResultList.append(fitRes)
 
             # report to terminal
-            logger.info(f"f{fitRes.report()}")
+            logger.info(f"{fitRes.report()}")
 
     # sort the list, such that the best fit comes first
     fitResultList.sort(key=lambda x: x.AIC())
@@ -321,6 +336,15 @@ def main(CLIargs: argparse.Namespace) -> None:
     ax.legend()
 
     fig.savefig( ReportFolder/"fits.pdf",bbox_inches="tight" )
+
+    # #####################
+    # 3. Plot a Param per AIC
+    # #####################
+    fig, axs = plotting.plotParameterPerAIC('E0', fitResultList)
+    axs[0].set_ylabel(r"$E_0$")
+
+    fig.savefig( ReportFolder/"E0PerAIC.pdf",bbox_inches="tight" )
+
 # end def main
 
 if __name__ == "__main__":

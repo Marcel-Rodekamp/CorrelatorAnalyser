@@ -1,11 +1,8 @@
-# for type hints import Self 
-from typing import Self
+# We offload all numerical work to numpy
+import numpy as np
 
 # we might want to allow deepcopies of fit models
 from copy import deepcopy
-
-# We offload all numerical work to numpy
-import numpy as np
 
 # Fitting is done using lsqfit, as it provides many features that we utilize. 
 # A lot of this code implements some wrapper around this
@@ -15,12 +12,18 @@ import lsqfit
 # in lsqfit. 
 import gvar as gv
 
+# File names are handled using pathlib
 from pathlib import Path
 
+# import h5py and pickle to (de)serialize a Fitter
 import pickle
+
 import h5py as h5
 
-#
+# for type hints import Self 
+from typing import Self
+
+# Import the base classes for type annotation
 from fitModels import FitModelBase, PriorBase
 
 # Bootstrapping can sometimes be slow we use multiprocessing to parralelize the fits over
@@ -44,8 +47,7 @@ def AIC(fit: lsqfit.nonlinear_fit) -> float:
             2. k = number of parameters
             3. d_K = number of points
 
-        @1. we use the augmented chi^2 from lsqfit including the priors
-        @2. we have a prior for each parameter thus each counts twice
+        If priored fit, this includes the prior. For a prior less version see AICp
     """
 
     return fit.chi2 + 2*len(fit.p) - 2*len(fit.x)
@@ -63,8 +65,9 @@ class Fitter:
         ToDo
     """
     # Fit model: callable(tau,p) where the parameters p can be fitted
-    model: callable = None
-    prior: callable = None
+    model: FitModelBase = None
+    # Prior: callable(nbst = None) a prior to the parameters
+    prior: PriorBase = None
     p0:    callable = None
 
     correlatedFit: bool = True
@@ -112,20 +115,50 @@ class Fitter:
         self.fitResult_bst = np.empty( self.Nbst, dtype=object )
         return self
     
-    def AIC(self):
-        return AIC(self.fitResult)
+    def AIC(self, getBst = False):
+        if getBst:
+            aic = np.zeros(self.Nbst)
+            for nbst in range(self.Nbst):
+                aic[nbst] = AIC(self.fitResult_bst[nbst])
+            return aic
+        else:
+            return AIC(self.fitResult)
 
-    def AICp(self):
-        return AICp(self.fitResult)
+    def AICp(self, getBst = False):
+        if getBst:
+            aicp = np.zeros(self.Nbst)
+            for nbst in range(self.Nbst):
+                aicp[nbst] = AICp(self.fitResult_bst[nbst])
+            return aicp
+        else:
+            return AICp(self.fitResult)
 
-    def Q(self):
-        return self.fitResult.Q
+    def Q(self,getBst = False):
+        if getBst:
+            Qs = np.zeros(self.Nbst)
+            for nbst in range(self.Nbst):
+                Qs[nbst] = self.fitResult_bst[nbst].Q
+            return Qs
+        else:
+            return self.fitResult.Q
 
-    def logGBF(self):
-        return self.fitResult.logGBF
+    def logGBF(self,getBst = False):
+        if getBst:
+            logGBF = np.zeros(self.Nbst)
+            for nbst in range(self.Nbst):
+                logGBF[nbst] = self.fitResult_bst[nbst].logGBF
+            return logGBF
+        else:
+            return self.fitResult.logGBF
 
-    def chi2(self):
-        return self.fitResult.chi2/self.fitResult.dof 
+    def chi2(self, getBst = False):
+        if getBst:
+            chi2s = np.zeros(self.Nbst)
+            for nbst in range(self.Nbst):
+                chi2s[nbst] = self.fitResult_bst[nbst].chi2/self.fitResult_bst[nbst].dof
+            return logGBF
+        else:
+            return self.fitResult.chi2/self.fitResult.dof 
 
     def bestParameter(self):
         out = None
@@ -208,7 +241,6 @@ class Fitter:
 
         # Provide a maximum of iteration to prevent infinitely running fits
         args["maxit"] = self.maxiter 
-    
         
         # Some arguments will differ whether a bootstrapped fit is performed or not
         if self.bootstrapFlag:
