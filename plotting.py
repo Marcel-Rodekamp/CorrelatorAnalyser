@@ -168,12 +168,14 @@ def plotParameterPerAIC( paramKey: str, fits: list[Fitter], title:str = '', ylab
         AICs_bst   = np.zeros( (Nbst,len(fits)) )
 
     for fitID, fit in enumerate(fits):
-        params_est[fitID] = fit.bestParameter()['est'][paramKey]
-        params_err[fitID] = fit.bestParameter()['err'][paramKey]
+        bestParams = fit.bestParameter()
+        if paramKey not in bestParams['est'].keys(): continue
+        params_est[fitID] = bestParams['est'][paramKey]
+        params_err[fitID] = bestParams['err'][paramKey]
         AICs[fitID] = fit.AIC()
 
         if hasBootstraps:
-            params_bst[:,fitID] = fit.bestParameter()['bst'][paramKey]
+            params_bst[:,fitID] = bestParams['bst'][paramKey]
             AICs_bst[:,fitID] = fit.AIC(getBst=True)
 
     # ##############################################

@@ -70,7 +70,7 @@ class Fitter:
     prior: PriorBase = None
     p0:    callable = None
 
-    correlatedFit: bool = True
+    correlatedFit: bool = False
 
     bootstrapFlag: bool = False
     Nbst: int = None
@@ -106,13 +106,41 @@ class Fitter:
         return self
 
     def setCorrelated(self, flag: bool) -> Self:
+        r"""
+            Turns correlated fits on. 
+            When this method is called each fitted uses a correlated $\chi^2$. 
+            The provided Cerr in the fits call is then interpreted as a covariance matrix.
+            If one diagonal (standard deviations) are provided it will be understood as a
+            diagonal covariance matrix (the square is automatically computed).
+
+            Caution, this tends to be very unstable when combined with bootstrap!
+            When the covariance is not invertible consider adding an svd cut. 
+
+            default = False
+        """
         self.correlatedFit = flag
         return self
 
-    def setBootstrapped(self, Nbst:int) -> Self:
-        self.bootstrapFlag = True
+    def setBootstrapped(self, Nbst:int, flag: bool = True) -> Self:
+        r"""
+            Turn on fitting over bootstraps. 
+            When this method is called a fit on bootstrap samples is performed which must 
+            be represented in the data provided to the fit call.
+
+            Notice, doing correlated fits under the bootstrap tends to be unstable. It should
+            be save to do uncorrelated fits here as the bootstrap maintains necessary correlations
+
+            It is encourage to develop priors/start parameters without fitting over bootstraps
+            as the required compute time becomes larger! If it is turned off uncertainties
+            are propagated using Gaussian error-propagation taking correlations into account
+            where possible.
+
+            default = False
+        """
+        self.bootstrapFlag = flag
         self.Nbst = Nbst
         self.fitResult_bst = np.empty( self.Nbst, dtype=object )
+
         return self
     
     def AIC(self, getBst = False):
@@ -166,26 +194,56 @@ class Fitter:
         if self.bootstrapFlag:
             # collect the bst fit results
             p_bst = {}
+            p_est = {}
             p_err = {}
 
-            for key in self.fitResult.p.keys():
-                p_bst[key] = np.zeros(self.Nbst)
+            keys = list(self.fitResult.p.keys())
 
-                for nbst in range(self.Nbst):
-                    p_bst[key][nbst] = gv.mean(self.fitResult_bst[nbst].p[key])
-                
-                p_err[key] = np.std(p_bst[key], axis=0)
+            for key in keys:
+                if "log" in key:
+                    keyRed = key[4:-1]
+                    p_est[keyRed] = gv.mean(gv.exp(self.fitResult.p[key]))
+                    p_bst[keyRed] = np.zeros(self.Nbst)
+                    for nbst in range(self.Nbst):
+                        p_bst[keyRed][nbst] = gv.mean(gv.exp(self.fitResult_bst[nbst].p[key]))
+                    p_err[keyRed] = np.std(p_bst[keyRed], axis=0)
+                elif key[4:-1] not in p_est.keys():
+                    p_est[key] = gv.mean(self.fitResult.p[key])
+                    p_bst[key] = np.zeros(self.Nbst)
+                    for nbst in range(self.Nbst):
+                        p_bst[key][nbst] = gv.mean(self.fitResult_bst[nbst].p[key])
+                    p_err[key] = np.std(p_bst[key], axis=0)
+                else:
+                    # we don't want to read the param which has been computed from the log 
+                    pass
 
-            # assemble in out dict
             out = { 
                 "bst": p_bst,
-                "est": gv.mean(self.fitResult.p),
+                "est": p_est,
                 "err": p_err
             }
         else:
+            # lsqfit does weird things with the std when using log priors. We translate
+            # them ourself here 
+            # this is not required for the bootstrap as the mean value is not affected,
+            # and the std is computed over the bst samples.
+            p = self.fitResult.p
+            p_res = {}
+
+            keys = list(p.keys())
+            for key in keys:
+                if "log" in key: 
+                    p_res[key[4:-1]] = gv.exp(p[key])
+                elif key[4:-1] not in p_res.keys():
+                    p_res[key] = p[key]
+                else:
+                    # we don't want to read the param which has been computed from the log 
+                    pass
+
+
             out = { 
-                "est": gv.mean(self.fitResult.p),
-                "err": gv.sdev(self.fitResult.p)
+                "est": gv.mean(p_res),
+                "err": gv.sdev(p_res)
             }
 
         return out
@@ -256,16 +314,14 @@ class Fitter:
 
             if ordinate_err.shape[-1] != abscissa.shape[0]:
                 raise RuntimeError( 
-                    f"Ordinate_errs last axis does not match abscissa: {ordinate.shape=}, {abscissa.shape=}"
+                    f"Ordinate_errs last axis does not match abscissa: {ordinate_err.shape=}, {abscissa.shape=}"
                 )
 
-            if ordinate_err.ndim >= 2 and ordinate_err.shape[0] == self.Nbst:
-                if ordinate_err.shape[0] == abscissa.shape[0]:
-                    raise RuntimeError( 
-                        f"Ordinate_err first axis (assumed to be bootstrap) has the same size as the abscissa. Consider different number of bootstrap samples (Nbst)."
-                    )
-
-                ordinateErrHasBst = True
+            if ordinate_err.ndim >= 2:
+                if ordinate_err.shape[0] == self.Nbst:
+                    ordinateErrHasBst = True
+                else:
+                    ordinateErrHasBst = False
             else:
                 ordinateErrHasBst = False
 
@@ -327,7 +383,7 @@ class Fitter:
 
             if ordinate_err.shape[-1] != abscissa.shape[0]:
                 raise RuntimeError( 
-                    f"Ordinate_errs last axis does not match abscissa: {ordinate.shape=}, {abscissa.shape=}"
+                    f"Ordinate_errs last axis does not match abscissa: {ordinate_err.shape=}, {abscissa.shape=}"
                 )
 
             ordinate_gvar = gv.gvar(ordinate, ordinate_err)
