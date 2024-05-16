@@ -147,8 +147,9 @@ def main(CLIargs: argparse.Namespace) -> None:
     # - delta: float, lattice spacing = T / Nt
     corrData, corrUnderlying, abscissa, delta  = testData(
         T = CLIargs.T, Nt = CLIargs.Nt, Nconf = CLIargs.Nconf, 
+        #As_f = [0.6,0.2,0.1,0.1], Es_f = [1,1.5,2,2.5], 
         As_f = [0.6,0.4], Es_f = [1,1.5], 
-        As_b = [0.006*np.exp(-CLIargs.T*2), 0.004*np.exp(-CLIargs.T*4)], Es_b = [2,4], 
+        As_b = [0.006*np.exp(-CLIargs.T*2), 0.002*np.exp(-CLIargs.T*4)], Es_b = [2,4], 
         hasStN = CLIargs.StN,
     )
 
@@ -344,6 +345,11 @@ def main(CLIargs: argparse.Namespace) -> None:
     axs[0].set_ylabel(r"$E_0$")
 
     fig.savefig( ReportFolder/"E0PerAIC.pdf",bbox_inches="tight" )
+
+    fig, axs = plotting.plotParameterPerAIC('E1', fitResultList)
+    axs[0].set_ylabel(r"$E_1$")
+
+    fig.savefig( ReportFolder/"E1PerAIC.pdf",bbox_inches="tight" )
 
 # end def main
 
