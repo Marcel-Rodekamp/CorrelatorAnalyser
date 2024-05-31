@@ -21,10 +21,18 @@ import pickle
 import h5py as h5
 
 # for type hints import Self 
-from typing import Self
+import sys
+
+# for type hints import Self 
+if sys.version_info.minor >= 11:
+    from typing import Self
+else:
+    from typing_extensions import Self
 
 # Import the base classes for type annotation
 from fitModels import FitModelBase, PriorBase
+
+from copy import deepcopy
 
 # Bootstrapping can sometimes be slow we use multiprocessing to parralelize the fits over
 # the different bst samples
@@ -49,16 +57,154 @@ def AIC(fit: lsqfit.nonlinear_fit) -> float:
 
         If priored fit, this includes the prior. For a prior less version see AICp
     """
-
-    return fit.chi2 + 2*len(fit.p) - 2*len(fit.x)
-
-def AICp(fit: lsqfit.nonlinear_fit) -> float:
     chip = np.sum([
         (fit.prior[key].mean-fit.p[key].mean)**2/fit.prior[key].sdev**2 
             for key in fit.prior.keys()
     ])
 
-    return AIC(fit) - chip
+    return AICp(fit) - chip
+
+
+def AICp(fit: lsqfit.nonlinear_fit) -> float:
+    return fit.chi2 + 2*len(fit.p) - 2*len(fit.x)
+
+def modelAverage_raw(param_est, param_err = None, param_bst = None, AIC_bst = None, AIC_est = None):
+        if param_bst is not None and AIC_bst is None:
+            raise ValueError("I need both param_bst AIC_bst")
+        if param_bst is None and AIC_bst is not None:
+            raise ValueError("I need both param_bst AIC_bst")
+
+        # ToDO allow cases with only bst etc
+
+        # #########################################################################
+        # Compute the weights
+        # #########################################################################
+        weights_est = np.exp(-0.5 * (AIC_est - np.min(AIC_est)))
+        if AIC_bst is not None:
+            weights_bst = np.exp(-0.5 * (AIC_bst - np.min(AIC_bst)))
+        
+        # #########################################################################
+        # Compute model average
+        # #########################################################################
+        modelAvg_est = np.average(param_est, weights = weights_est)
+
+        if AIC_bst is not None:
+            modelAvg_bst = np.average(param_bst, weights = weights_bst, axis=1)
+            modelAvg_err = np.std(modelAvg_bst, axis=0)
+
+            return { 'bst':modelAvg_bst, 'est':modelAvg_est, 'err':modelAvg_err }
+        elif param_err is not None:
+            modelAvg_err = np.average(param_err, weights = weights_est)
+
+            return { 'est':modelAvg_est, 'err':modelAvg_err }
+        else:
+            return { 'est':modelAvg_est }
+    # end def avg
+
+def modelAverage(fits:list[object], key: str = None):
+
+    def avg(key:str):
+        param_est = np.zeros(N)
+        param_err = np.zeros(N)
+
+        AIC_est = np.zeros(N)
+
+        if hasBootstrap:
+            AIC_bst = np.zeros((Nbst,N))
+            param_bst = np.zeros((Nbst,N))
+
+        # #########################################################################
+        # Collect the data
+        # #########################################################################
+        for fitID,fit in enumerate(fits):
+            # dictionary[{'est','err','bst'}][key]
+            try:
+                bestParam = fit.bestParameter(key)
+            except KeyError as e:
+                continue
+
+            param_est[fitID] = bestParam['est'][key]
+            param_err[fitID] = bestParam['err'][key]
+            AIC_est[fitID] = fit.AIC()
+
+            if hasBootstrap:
+                param_bst[:,fitID] = bestParam['bst'][key]
+                AIC_bst[:,fitID] = fit.AIC(getBst=True)
+        # end fitID, fit
+
+        # #########################################################################
+        # Compute the weights
+        # #########################################################################
+        weights_est = np.exp(-0.5 * (AIC_est - np.min(AIC_est)))
+        if hasBootstrap:
+            weights_bst = np.exp(-0.5 * (AIC_bst - np.min(AIC_bst)))
+        
+        # #########################################################################
+        # Compute model average
+        # #########################################################################
+        modelAvg_est = np.average(param_est, weights = weights_est)
+
+        if hasBootstrap:
+            modelAvg_bst = np.average(param_bst, weights = weights_bst, axis=1)
+            modelAvg_err = np.std(modelAvg_bst, axis=0)
+
+            return { 'bst':modelAvg_bst, 'est':modelAvg_est, 'err':modelAvg_err }
+        else:
+            modelAvg_err = np.average(param_err, weights = weights_est)
+
+            return { 'est':modelAvg_est, 'err':modelAvg_err }
+    # end def avg
+
+    # #########################################################################
+    # Set up identifiers for different cases
+    # #########################################################################
+    N = len(fits)
+
+    # all fits are expected to have bootstrap
+    # if at least one hasn't the errors will be propagated using gaussian 
+    # error-propagation ignoring correlations!
+    hasBootstrap = all([fit.bootstrapFlag for fit in fits])
+    # we find the smallest number of bootstrap samples and take that as a reference
+    if hasBootstrap:
+        Nbst = fits[0].Nbst 
+        
+        # we only deal with this if all have the same number of bst samples
+        allNbst_ = np.array([fit.Nbst for fit in fits])
+        if np.any( allNbst_ != Nbst ):
+            raise RuntimeError(f"modelAverage expects a list of fits with the same number of bootstrap samples but got: {allNbst_}")
+
+    if key is None:
+        result_dict = {
+            'est': {},
+            'err': {},
+        }
+        if hasBootstrap:
+            result_dict['bst'] = {}
+        
+        keys = []
+        for fit in fits:
+            keys.extend(fit.fitResult.p.keys())
+
+        # find all unique keys
+        keys = np.unique( keys )
+
+        # remove log(Keys), eveything is setup to provide the normal keys instead of log keys
+        keys = [ key[4:-1] if 'log' in key else key for key in keys ] 
+
+        for key in keys:
+            res = avg(key)
+
+            result_dict['est'][key] = res['est']
+            result_dict['err'][key] = res['err']
+
+            if hasBootstrap:
+                result_dict['bst'][key] = res['bst']
+        # end for key
+
+        return result_dict
+
+    else:
+        return avg(key)
 
 class Fitter:
     r"""
@@ -79,14 +225,13 @@ class Fitter:
     # Results
     fitResult: lsqfit.nonlinear_fit = None
 
-    def __init__(self, repr:str = "Fit", useMultiprocessing: bool = True, Nplot = 100, maxiter:int = 1000) -> Self:
+    def __init__(self, repr:str = "Fit", Nplot = 100, maxiter:int = 1000) -> Self:
         r"""
             Setup the basic fitter
         """
         self.maxiter = maxiter
         self.repr = repr
         self.Nplot = Nplot
-        self.useMultiprocessing = useMultiprocessing
 
     def setFitModel(self, model: FitModelBase ) -> Self:
         self.model = model
@@ -184,20 +329,22 @@ class Fitter:
             chi2s = np.zeros(self.Nbst)
             for nbst in range(self.Nbst):
                 chi2s[nbst] = self.fitResult_bst[nbst].chi2/self.fitResult_bst[nbst].dof
-            return logGBF
+            return chi2s
         else:
             return self.fitResult.chi2/self.fitResult.dof 
 
-    def bestParameter(self):
+    def bestParameter(self, key = None):
         out = None
+        if key is None:
+            keys = list(self.fitResult.p.keys())
+        else:
+            keys = [key]
 
         if self.bootstrapFlag:
             # collect the bst fit results
             p_bst = {}
             p_est = {}
             p_err = {}
-
-            keys = list(self.fitResult.p.keys())
 
             for key in keys:
                 if "log" in key:
@@ -230,7 +377,6 @@ class Fitter:
             p = self.fitResult.p
             p_res = {}
 
-            keys = list(p.keys())
             for key in keys:
                 if "log" in key: 
                     p_res[key[4:-1]] = gv.exp(p[key])
@@ -239,7 +385,6 @@ class Fitter:
                 else:
                     # we don't want to read the param which has been computed from the log 
                     pass
-
 
             out = { 
                 "est": gv.mean(p_res),
@@ -415,22 +560,82 @@ class Fitter:
         else:
             return self
     
-    def serialize(self, file: Path, overwrite: bool = True) -> None:
+    def serialize(self, file: Path, overwrite: bool = True, fullSerialize = False) -> None:
         r"""
             Dump a Fitter to file
         """
-        
+
         handle = 'w' if overwrite else 'r+' 
+
+        if not fullSerialize:
+            with h5.File(file, handle) as h5f:
+                bestParam = self.bestParameter()
+                for key,value in bestParam.items():
+                    # bst,est,err
+                    for paramKey, param in value.items():
+                        # parameters A0,E0,... or whatever
+                        h5f.create_dataset(
+                            f"FitResult/{key}/{paramKey}", data = param 
+                        )
+
+                if self.bootstrapFlag:
+                    AIC = self.AIC(getBst=True)
+                    Q = self.Q(getBst=True)
+                    logGBF = self.logGBF(getBst=True)
+                    chi2 = self.chi2(getBst=True)
+
+                    h5f.create_dataset(f"FitStatistic/AIC/bst", data = AIC)
+                    h5f.create_dataset(f"FitStatistic/Q/bst", data = Q)
+                    h5f.create_dataset(f"FitStatistic/logGBF/bst", data = logGBF)
+                    h5f.create_dataset(f"FitStatistic/chi2/bst", data = chi2)
+                
+                AIC = self.AIC()
+                Q = self.Q()
+                logGBF = self.logGBF()
+                chi2 = self.chi2()
+
+                h5f.create_dataset(f"FitStatistic/AIC/est", data = AIC)
+                h5f.create_dataset(f"FitStatistic/Q/est", data = Q)
+                h5f.create_dataset(f"FitStatistic/logGBF/est", data = logGBF)
+                h5f.create_dataset(f"FitStatistic/chi2/est", data = chi2)
+
+            return
+
+        # else:
 
         with h5.File(file, handle) as h5f:
             for key,value in self.__dict__.items():
-                if "fitResult" == key or "fitResult_bst" == key :
-                    value = np.void(gv.dumps(value))
+                if "fitResult" == key:
+                    # Explicitly delete the stored data
+                    bak = deepcopy(value.data)
+                    del value.data
+
+                    # The remaining objects are small and we can simply pickle and store them
+                    value_to_store = np.void(gv.dumps(value))
+
+                    # serialization should leave the object intact!
+                    value.data = bak
+                elif "fitResult_bst" == key:
+        
+                    # Explicitly delete the stored data
+                    bak = np.zeros_like(value)
+                    for nbst,v in enumerate(value):
+                        bak[nbst] = deepcopy(v.data)
+                        del v.data
+
+                    # The remaining objects are small and we can simply pickle and store them
+                    value_to_store = np.void(gv.dumps(value))
+
+                    # serialization should leave the object intact!
+                    for nbst,v in enumerate(value):
+                        v.data = bak[nbst]
                 elif "model" == key or "prior" == key or "p0" == key:
-                    value = np.void(pickle.dumps(value))
+                    value_to_store = np.void(pickle.dumps(value))
+                else:
+                    value_to_store = value
 
                 h5f.create_dataset(
-                    key, data = value 
+                    key, data = value_to_store 
                 )
 
     @staticmethod

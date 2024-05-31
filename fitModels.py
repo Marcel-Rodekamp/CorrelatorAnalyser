@@ -2,7 +2,13 @@
 import numpy as np
 
 # for type hints import Self 
-from typing import Self
+import sys
+
+# for type hints import Self 
+if sys.version_info.minor >= 11:
+    from typing import Self
+else:
+    from typing_extensions import Self
 
 # for the base class definition we import abstract utils
 from abc import abstractmethod
@@ -131,7 +137,7 @@ class SimpleSumOfExponentialsP0(PriorBase):
 #########################################################################################
 
 class DoubleExponentialsModel(FitModelBase): 
-    def __init__(self, Nstates:int, delta:float = 1):
+    def __init__(self, Nstates:int, delta: float = 1):
         self.Nstates = Nstates
         self.delta = delta
 
@@ -157,7 +163,7 @@ class DoubleExponentialsModel(FitModelBase):
         F = p["F0"]
 
         out += p["A0"] * np.exp( - tau * E * self.delta )
-        out += p["B0"] * np.exp(   tau * F * self.delta )
+        out += p["B0"] * np.exp(   tau * F * self.delta ) 
 
         for n in range(1,self.Nstates):
             E += p[f"ΔE{n}"]

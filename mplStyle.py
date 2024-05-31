@@ -32,21 +32,21 @@ COLORS = {
 MAIN_COLORS = {
     "primary": COLORS['indigo'],
     "complementary": COLORS['amber'],
-    "natural": COLORS['blue grey'],
+    "neutral": COLORS['blue grey'],
     "highlight": COLORS['light blue'],
 }
 
 POSITIV_COLORS = {
     "primary": COLORS['green'],
     "complementary": COLORS['red'],
-    "natural": COLORS['blue grey'],
+    "neutral": COLORS['blue grey'],
     "highlight": COLORS['lime'],
 }
 
 CREATIVE_COLORS = {
     "primary": COLORS['orange'],
     "complementary": COLORS['blue'],
-    "natural": COLORS['blue grey'],
+    "neutral": COLORS['blue grey'],
     "highlight": COLORS['yellow'],
 }
 
@@ -55,13 +55,19 @@ mpl.rcParams['axes.prop_cycle'] = mpl.cycler(color=list(COLORS.values()))
 
 # Define style parameters
 styleParams = {
-    "axes.titlesize"  : 24,
-    "axes.labelsize"  : 20,
-    "lines.linewidth" :  3,
-    "lines.markersize": 10,
-    "xtick.labelsize" : 16,
-    "ytick.labelsize" : 16,
-    "figure.figsize"  : (16,9),
+    "axes.titlesize"     : 34,
+    "axes.labelsize"     : 34,
+    "legend.fontsize"    : 28,
+    "xtick.labelsize"    : 28,
+    "ytick.labelsize"    : 28,
+    "lines.linewidth"    :  3,
+    "lines.markersize"   : 10,
+    "figure.figsize"     : (16,9),
+    "text.usetex"        : False,
+    "font.family"        : "cmr10, serif",
+    "text.latex.preamble": r"\usepackage{lmodern}",
+    "mathtext.fontset"   : "cm",
+    "axes.formatter.use_mathtext": True
 }
 
 plt.style.use(styleParams)
