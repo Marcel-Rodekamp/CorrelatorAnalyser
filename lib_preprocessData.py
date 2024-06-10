@@ -223,10 +223,71 @@ class Data:
             """
             # We start by block diagonalizing the correlator using the symmetry of the system
             C_block = amplitudes[None,None,:,:] @ C.real @ amplitudes.T.conj()[None,None,:,:] # shape = (Nbst,Nt,Nx,Nx)
-            
-            C_block = np.diagonal(C_block, axis1=2, axis2=3)
 
-            return C_block, C_block.mean(axis=0), C_block.std(axis=0)
+            # now we ensure that the correlator is symmetric
+            C_block += C_block.transpose(0,1,3,2)
+            C_block /= 2
+            
+            # compute the average to find a transformation for all time slices
+            C_avg = np.mean(C_block, axis = 0)
+            
+            # for the symmetrized correlator we have one less time slice. Hence we need to
+            # extract the size of the time axis here. The incoming correlators are assumed
+            # to be of shape = (Nbst,Nt,Nx,Nx) -> (Nt,Nx,Nx)
+            Nt = C_avg.shape[0]
+
+            # prepare memory to store the diagonalized correlators
+            D_avg = np.zeros( (Nt,self.Nx) )
+            U_avg = np.zeros( (Nt,self.Nx,self.Nx) )
+
+            irrepList = [slice_pp,slice_mp,slice_pm,slice_mm]
+
+            # prepare memory to store the diagonalized correlators
+            D_avg = np.zeros( (Nt,self.Nx) )
+            U_avg = np.zeros( (Nt,self.Nx,self.Nx) )
+
+            irrepList = [slice_pp,slice_mp,slice_pm,slice_mm]
+            
+            # Diagonalize the blocks of the average 
+            # this gives us a set of Nt unitary transformations U_avg from which we extract 
+            # a single one per irrep block to almost diagonalize all time slices later on
+            # This measure is needed as a full time slice by time slice diagonalization 
+            # generates kinks due to level (eigenvalue) crossing.
+            for i,block in enumerate(irrepList):
+                for t in range(Nt):
+                    D_avg[t,block], U_avg[t,block,block] = jacobi_method(C_avg[t,block,block])
+
+            UdagU_tv = np.einsum('tik,vkj->tvij', U_avg.transpose(0,2,1), U_avg ) - np.identity(self.Nx)[None,None,:,:]
+            
+            norm = np.sum(
+                np.array([
+                    np.max( np.abs(UdagU_tv[:,:,block,block]),axis=(2,3) )
+                    for block in irrepList
+                ]),
+                axis = -1
+            ).T
+    
+            tchosen = np.argmin( norm, axis = 0 )
+
+            # prepare memory to store the diagonal per bst and the systematic uncertainty
+            C_diag_bst = np.zeros( (self.Nbst,Nt,self.Nx) )
+
+            for i,block in enumerate(irrepList):
+                # diagonalize a little more then just the irreps
+                D_bst = U_avg[tchosen[i],block,block].T[None,None,:,:] @ C_block[:,:,block,block] @ U_avg[tchosen[i],block,block][None,None,:,:]
+
+                C_diag_bst[:,:,block] = np.diagonal(D_bst, axis1=2, axis2=3)
+            
+
+            # finally take the estimate and compute uncertainty
+            C_diag_est = np.mean(C_diag_bst, axis=0)
+            C_diag_err = np.std( C_diag_bst, axis=0)     
+
+            return C_diag_bst, C_diag_est, C_diag_err
+            
+            #C_block = np.diagonal(C_block, axis1=2, axis2=3)
+
+            #return C_block, C_block.mean(axis=0), C_block.std(axis=0)
         # end def diagonalize
 
         def measure( C, Csh = None ):
