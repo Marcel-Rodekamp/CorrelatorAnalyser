@@ -102,7 +102,8 @@ def fit(*,
     if prior is None and po is None: raise ValueError(f"at least one of prior and po needs to be defined")
     args["prior" if prior is not None else "po"] = prior if prior is not None else po
     
-    res = {}
+    res = FitResult(ts=abscissa[0],te=abscissa[-1])
+
     #prepare data for the central value fit:
     if central_value_fit:
         #for the uncorrelated fit check in which way the variance is given and save in temp
@@ -194,21 +195,41 @@ def fit(*,
             raise RuntimeError(f"{msg}\n{e}")
 
     
-    
-
     return res
 
-# @dataclass
-# class FitResult:
-#     """ToDo   """
-#     best_fit_param: dict
-#     chi_sqrt: float | np.ndarray
-#     aug_chi_sqrt: float | np.ndarray
-#     p_value: float | np.ndarray
-#     Q_value: float | np.ndarray
-#     num_dof: 
+@dataclass
+class FitResult:
+    """ToDo   """
+    
+    ts: int #startpoint abscissa
+    te: int #endpoint abscissa
+    num_dof: int = None
+    Nbst: int | None = None
+    best_fit_param: dict | None = None
+    best_fit_param_bst: dict| None = None
+    chi2: float | None = None
+    chi2_bst : np.ndarray | None = None
+    aug_chi2: float | None = None
+    aug_chi2_bst: np.ndarray | None = None
+    p_value: float | None  = None
+    p_value_bst: np.ndarray | None = None
+    Q_value: float | None  = None
+    Q_value_bst: np.ndarray | None = None
+
+    def import_from_nonlinear_fit(self, nlf, nbst: None | int = None):
+        pass
+    def __post_init__(self):
+        if Nbst is None: return
+        chi2_bst = np.zeros(Nbst)
+        # best_fit_params_bst = np.zeros(Nbst)
+        aug_chi2_bst = np.zeros(Nbst)
+        p_value_bst = np.zeros(Nbst)
+        Q_value_bst = np.zeros(Nbst)
 
 
+
+
+    # def eval_fit_model(abscissa:np.ndarray, params:dict = None)->np.ndarray:
 
 
 
