@@ -2,13 +2,13 @@
 import numpy as np
 
 # gvar - Gaussian Random Variables - is a package that defines random variables and is heavily used
-# in lsqfit. 
+# in lsqfit.
 import gvar as gv
 
-# Logging is done by the standard module 
-import logging 
+# Logging is done by the standard module
+import logging
 
-# CLI arguments are handled/defined using 
+# CLI arguments are handled/defined using
 import argparse
 
 # Files are handled using pathlib
@@ -20,24 +20,33 @@ import h5py as h5
 # we still import plt to access interactive show windows etc
 import matplotlib.pyplot as plt
 
-# we track progress using progressbars 
+# we track progress using progressbars
 from tqdm import tqdm
 
 # to work with logging we redirect the logger output to tqdm.write
 from tqdm.contrib.logging import logging_redirect_tqdm
 
-import itertools 
+import itertools
 
 # Some plotting functions are defined in
-import plotting
+import correlatoranalyser.plotting.plotting as plotting
 
 # Fitting is done using the fitter interface defined here
-import fitter 
+import correlatoranalyser.fitter as fitter
 
-import fitModels
+import correlatoranalyser.fitModels as fitModels
 
 
-def testData(T: float, Nt: int, Nconf: int, As_f: np.ndarray, Es_f: np.ndarray, As_b: np.ndarray, Es_b: np.ndarray, hasStN: bool = False) -> np.ndarray:
+def testData(
+    T: float,
+    Nt: int,
+    Nconf: int,
+    As_f: np.ndarray,
+    Es_f: np.ndarray,
+    As_b: np.ndarray,
+    Es_b: np.ndarray,
+    hasStN: bool = False,
+) -> np.ndarray:
     r"""
         This generates a set of artificial data points mimicking a correlation function
         \f[
@@ -66,58 +75,63 @@ def testData(T: float, Nt: int, Nconf: int, As_f: np.ndarray, Es_f: np.ndarray, 
     """
 
     # we assume a stochastic scaling of the standard deviation as it is expected from a MCMC algorithm
-    std = 1. / np.sqrt( Nconf )
-    
-    # Check that we have the same number of states in A_b and E_b
-    if len(As_f) != len(Es_f): 
-        raise RuntimeError(f"Length of As_f ({len(As_f)}) and Es_f ({len(Es_f)}) must match!")
+    std = 1.0 / np.sqrt(Nconf)
 
     # Check that we have the same number of states in A_b and E_b
-    if len(As_f) != len(Es_f): 
-        raise RuntimeError(f"Length of As_f ({len(As_f)}) and Es_f ({len(Es_f)}) must match!")
+    if len(As_f) != len(Es_f):
+        raise RuntimeError(
+            f"Length of As_f ({len(As_f)}) and Es_f ({len(Es_f)}) must match!"
+        )
 
-    # define an artifical lattice spacing 
-    delta = T/Nt
+    # Check that we have the same number of states in A_b and E_b
+    if len(As_f) != len(Es_f):
+        raise RuntimeError(
+            f"Length of As_f ({len(As_f)}) and Es_f ({len(Es_f)}) must match!"
+        )
+
+    # define an artifical lattice spacing
+    delta = T / Nt
 
     # define abscissa with lattice spacing = 1
-    abscissa = np.arange( Nt )
+    abscissa = np.arange(Nt)
 
     # compute the central values (underlying truth) of the data
-    corrUnderlying = np.zeros( Nt, dtype = float )
+    corrUnderlying = np.zeros(Nt, dtype=float)
 
     # forward propagating states
-    for A,E in zip(As_f,Es_f):
-        corrUnderlying += A * np.exp( - E * abscissa * delta)
+    for A, E in zip(As_f, Es_f):
+        corrUnderlying += A * np.exp(-E * abscissa * delta)
 
     # backward propagating states
-    for A,E in zip(As_b,Es_b):
-        corrUnderlying += A * np.exp(   E * abscissa * delta)
+    for A, E in zip(As_b, Es_b):
+        corrUnderlying += A * np.exp(E * abscissa * delta)
 
     # Add a signal to noise porblem ~ exp(- t)
     if hasStN:
-        std = std * np.exp(np.max(np.concatenate((Es_f,Es_b))) * (corrUnderlying[0] - corrUnderlying) )
+        std = std * np.exp(
+            np.max(np.concatenate((Es_f, Es_b))) * (corrUnderlying[0] - corrUnderlying)
+        )
     else:
         std = np.full_like(corrUnderlying, std)
 
     # define the actual data
-    corrData = np.random.normal(
-        loc = corrUnderlying,
-        scale = std,
-        size = (Nconf,Nt)
-    )
+    corrData = np.random.normal(loc=corrUnderlying, scale=std, size=(Nconf, Nt))
 
-    return corrData, corrUnderlying, abscissa, delta 
-# end def testData 
+    return corrData, corrUnderlying, abscissa, delta
+
+
+# end def testData
+
 
 def main(CLIargs: argparse.Namespace) -> None:
     r"""
-        Main entry to this code. 
-        Arguments: 
-            - CLIargs: argparse.Namespace, command-line arguments as parsed by argparse. Required constituents:
-                1. cacheFolder: str, a folder to store analysis results (as hdf5 format).
-                2. reportFolder: str, a folder to store plots and text files summarizing the fit results.
+    Main entry to this code.
+    Arguments:
+        - CLIargs: argparse.Namespace, command-line arguments as parsed by argparse. Required constituents:
+            1. cacheFolder: str, a folder to store analysis results (as hdf5 format).
+            2. reportFolder: str, a folder to store plots and text files summarizing the fit results.
 
-        Requires a logger `logger` to be defined on the global level.
+    Requires a logger `logger` to be defined on the global level.
     """
     global logger
 
@@ -144,21 +158,23 @@ def main(CLIargs: argparse.Namespace) -> None:
     # Data generation
     # ##########################################################
     underlyingParams = {
-        "As_f": [0.6,0.4], 
-        "Es_f": [1,1.5], 
-        "As_b": [0.006*np.exp(-CLIargs.T*2), 0.002*np.exp(-CLIargs.T*4)],
-        "Es_b": [2,4], 
+        "As_f": [0.6, 0.4],
+        "Es_f": [1, 1.5],
+        "As_b": [0.006 * np.exp(-CLIargs.T * 2), 0.002 * np.exp(-CLIargs.T * 4)],
+        "Es_b": [2, 4],
     }
-    
+
     # Create fake data, this could be reading in etc.
     # - corrData: np.array(Nconf,Nt), sampled data, normally distributed and uncorrelated
     # - corrUnderlying: np.array(Nt), underlying true values from which we sampled
     # - abscissa: np.arrange(Nt), the array which we can use for plotting
     # - delta: float, lattice spacing = T / Nt
-    corrData, corrUnderlying, abscissa, delta  = testData(
-        T = CLIargs.T, Nt = CLIargs.Nt, Nconf = CLIargs.Nconf, 
+    corrData, corrUnderlying, abscissa, delta = testData(
+        T=CLIargs.T,
+        Nt=CLIargs.Nt,
+        Nconf=CLIargs.Nconf,
         **underlyingParams,
-        hasStN = CLIargs.StN,
+        hasStN=CLIargs.StN,
     )
 
     # ##########################################################
@@ -169,29 +185,29 @@ def main(CLIargs: argparse.Namespace) -> None:
     if CLIargs.Nbst is None:
         # if no bootstrap is desired we can simplify using gvar which automatically
         Cest = corrData.mean(axis=0)
-        Cerr = corrData.std(axis=0)/np.sqrt(CLIargs.Nconf)
+        Cerr = corrData.std(axis=0) / np.sqrt(CLIargs.Nconf)
     else:
         bootstrapIDs = np.random.randint(
-            0, CLIargs.Nconf, size = (CLIargs.Nbst, CLIargs.Nconf)
+            0, CLIargs.Nconf, size=(CLIargs.Nbst, CLIargs.Nconf)
         )
 
-        Cbst = np.zeros( (CLIargs.Nbst, CLIargs.Nt ) )
-        Cbrr = np.zeros( (CLIargs.Nbst, CLIargs.Nt ) )
-        for nbst in tqdm(range(CLIargs.Nbst), desc = 'Bootstrapping Correlator'):
-            sample = corrData[ bootstrapIDs[nbst] ]
-            Cbst[nbst] = np.mean( sample,axis=0 )
-            Cbrr[nbst] = np.std( sample,axis=0 )
-        Cest = np.mean(Cbst,axis=0)
-        Cerr = np.std(Cbst,axis=0)
-        Ccov = np.cov(Cbst,rowvar=False)
+        Cbst = np.zeros((CLIargs.Nbst, CLIargs.Nt))
+        Cbrr = np.zeros((CLIargs.Nbst, CLIargs.Nt))
+        for nbst in tqdm(range(CLIargs.Nbst), desc="Bootstrapping Correlator"):
+            sample = corrData[bootstrapIDs[nbst]]
+            Cbst[nbst] = np.mean(sample, axis=0)
+            Cbrr[nbst] = np.std(sample, axis=0)
+        Cest = np.mean(Cbst, axis=0)
+        Cerr = np.std(Cbst, axis=0)
+        Ccov = np.cov(Cbst, rowvar=False)
     # end else Nbst
-    
+
     # ##########################################################
     # Perform fits
     # ##########################################################
-    
-    # Here we set up various fits and execute them according to some rules that we define 
-    # for the specific data. 
+
+    # Here we set up various fits and execute them according to some rules that we define
+    # for the specific data.
     # We explicitly make use of the prior and fit-models from fitModels.py.
     # If none of those fits your problem/desire you eventually have to create them yourself
     # simply by inheriting from the provided base-class
@@ -203,24 +219,22 @@ def main(CLIargs: argparse.Namespace) -> None:
     maxStates = 2
 
     # iterate over possible states
-    for ns in (pbar:= tqdm( range(1,maxStates+1)) ):
+    for ns in (pbar := tqdm(range(1, maxStates + 1))):
         # Create the fitter for an ns-state fit:
         # 1. Define a raw fitter
         fit = fitter.Fitter("ExponentialFitter")
 
         # 2. Add a ns-state fit model. We want the energies in lattice units thus we add
-        #    the lattice spacing delta (default = 1 if not given) into this. 
+        #    the lattice spacing delta (default = 1 if not given) into this.
         #    Alternatively, the abscissa could be multiplied by delta in the first place.
         fit = fit.setFitModel(
-            fitModels.DoubleExponentialsModel(Nstates=ns,delta=delta)
-        ) 
+            fitModels.DoubleExponentialsModel(Nstates=ns, delta=delta)
+        )
 
         # 3.1 Add a prior to the fit model
-        fit = fit.setPrior(
-            fitModels.DoubleExponentialsFlatPrior(Nstates=ns)
-        )
-        
-        #fit = fit.setPrior(
+        fit = fit.setPrior(fitModels.DoubleExponentialsFlatPrior(Nstates=ns))
+
+        # fit = fit.setPrior(
         #    fitModels.DoubleExponentialsDataBasedPrior(
         #        Nstates  = ns,
         #        Corr_bst = Cbst,
@@ -228,12 +242,12 @@ def main(CLIargs: argparse.Namespace) -> None:
         #        #widthFactor = 3 # default = None
         #        percent  = 0.2 # default = None
         #    )
-        #)
-        
-        # 3.2 or add start parameter to the fit model
-        #fit = fit.setP0(fitModels.SimpleSumOfExponentialsP0(Nstates=ns))
+        # )
 
-        # 4. Don't do a correlated fit (there are no correlations in the testData) 
+        # 3.2 or add start parameter to the fit model
+        # fit = fit.setP0(fitModels.SimpleSumOfExponentialsP0(Nstates=ns))
+
+        # 4. Don't do a correlated fit (there are no correlations in the testData)
         #    default = True -> This requires the covariance in ordinate_err
         if CLIargs.doCorrelatedFits:
             fit = fit.setCorrelated(True)
@@ -248,43 +262,59 @@ def main(CLIargs: argparse.Namespace) -> None:
         tmin = np.argmin(Cest)
 
         # taking all possible intervals to the left given at least enough points for the parameters
-        start_times = np.arange(1, tmin - 2*ns-2)
+        start_times = np.arange(1, tmin - 2 * ns - 2)
 
         # taking all possible intervals to the right given at least enough points for the parameters
-        end_times = np.arange(tmin+2*ns+2, CLIargs.Nt-1)
+        end_times = np.arange(tmin + 2 * ns + 2, CLIargs.Nt - 1)
 
         # ensure that we don't loop over empty slices
-        if len(start_times) == 0: start_times = [1]
-        if len(end_times) == 0: end_times = [CLIargs.Nt-1]
+        if len(start_times) == 0:
+            start_times = [1]
+        if len(end_times) == 0:
+            end_times = [CLIargs.Nt - 1]
 
-        pbar_intervals = tqdm(total=len(start_times)*len(end_times))
-        for ts,te in itertools.product(start_times,end_times):
+        pbar_intervals = tqdm(total=len(start_times) * len(end_times))
+        for ts, te in itertools.product(start_times, end_times):
             # perform the fit
-            # We could also provide Covariance instead of standard deviation 
+            # We could also provide Covariance instead of standard deviation
             # to utilize a chi^2 with correlations
             # Notice, don't provide bootstrap samples if no bootstrap fits are being done
-            # otherwise a runtime error will be thrown due to no matching axes. 
+            # otherwise a runtime error will be thrown due to no matching axes.
             if not fit.bootstrapFlag:
                 if fit.correlatedFit:
                     # Using Covariance
-                    fitRes = fit( abscissa[ts:te], Cest[ts:te], Ccov[ts:te,ts:te], createCopy = True )
+                    fitRes = fit(
+                        abscissa[ts:te],
+                        Cest[ts:te],
+                        Ccov[ts:te, ts:te],
+                        createCopy=True,
+                    )
                 else:
                     # Using standard deviation
-                    fitRes = fit( abscissa[ts:te], Cest[ts:te], Cerr[ts:te], createCopy = True )
+                    fitRes = fit(
+                        abscissa[ts:te], Cest[ts:te], Cerr[ts:te], createCopy=True
+                    )
 
             # If bootstrapped fits are desired we need to provide a set of bootstrap samples
             # for the central values.
             # If a single standard devation (or covariance) is provided it will be used
             # for all bootstrap samples (key: frozen covariance)
-            # this is typically a good approximation especially helps to stabilize 
+            # this is typically a good approximation especially helps to stabilize
             # correlated fits
             else:
                 if fit.correlatedFit:
                     # Using Covariance
-                    fitRes = fit( abscissa[ts:te], Cbst[:,ts:te], Ccov[ts:te,ts:te], createCopy = True )
+                    fitRes = fit(
+                        abscissa[ts:te],
+                        Cbst[:, ts:te],
+                        Ccov[ts:te, ts:te],
+                        createCopy=True,
+                    )
                 else:
                     # Using standard deviation
-                    fitRes = fit( abscissa[ts:te], Cbst[:,ts:te], Cerr[ts:te], createCopy = True )
+                    fitRes = fit(
+                        abscissa[ts:te], Cbst[:, ts:te], Cerr[ts:te], createCopy=True
+                    )
 
             # If we provide a standard deviation (or covariance) for each bootstrap sample
             # it will be used as provided.
@@ -293,14 +323,16 @@ def main(CLIargs: argparse.Namespace) -> None:
             # - fitRes.fitResult_bst
             # will be filled. Typically, you want to use those as central values and determine
             # confidence from the bootstrap.
-                    #fitRes = fit( abscissa[ts:te], Cbst[:,ts:te], Cbrr[:,ts:te], createCopy = True )
+            # fitRes = fit( abscissa[ts:te], Cbst[:,ts:te], Cbrr[:,ts:te], createCopy = True )
 
             # We serialize the result to disc
-            fitRes.serialize(CacheFolder/f"fit_Nstate{ns:g}_ts{ts:g}_te{te:g}.h5", overwrite=True)
+            fitRes.serialize(
+                CacheFolder / f"fit_Nstate{ns:g}_ts{ts:g}_te{te:g}.h5", overwrite=True
+            )
 
-            # we can later read it back in with 
-            #fitRes = fitter.Fitter.deserialize(CacheFolder/f"fit_Nstate{ns:g}_ts{ts:g}_te{te:g}.h5")
-            
+            # we can later read it back in with
+            # fitRes = fitter.Fitter.deserialize(CacheFolder/f"fit_Nstate{ns:g}_ts{ts:g}_te{te:g}.h5")
+
             # append the fit result
             fitResultList.append(fitRes)
 
@@ -320,101 +352,97 @@ def main(CLIargs: argparse.Namespace) -> None:
 
     # dictionary of fit results with
     # "bst": { "A0":array,"A1":array,..., "E0":array,"E1":array,...} # if bootstrapped fit
-    # "est": { "A0":float,"A1":float,..., "E0":float,"E1":float,...} 
-    # "err": { "A0":float,"A1":float,..., "E0":float,"E1":float,...} 
+    # "est": { "A0":float,"A1":float,..., "E0":float,"E1":float,...}
+    # "err": { "A0":float,"A1":float,..., "E0":float,"E1":float,...}
     bestFit = fitResultList[0]
     bestParams = bestFit.bestParameter()
 
     msg = f"Best Fit Result: AIC={fitResultList[0].AIC():g}\n"
     for key in bestParams["est"].keys():
         # log(E0) -> E0 and so on
-        if 'log' in key: key = key[4:-1]
-        msg+=f"\t\t\t 1. {key}: {gv.gvar(bestParams['est'][key], bestParams['err'][key])}\n"
+        if "log" in key:
+            key = key[4:-1]
+        msg += f"\t\t\t 1. {key}: {gv.gvar(bestParams['est'][key], bestParams['err'][key])}\n"
     logger.info(msg)
 
     msg = "Underlying Parameters:\n"
-    for n, E in enumerate(underlyingParams['Es_f']):
-        msg+=f"\t\t\t* E{n}: {E:g}\n"
-    for n, F in enumerate(underlyingParams['Es_b']):
-        msg+=f"\t\t\t* F{n}: {F:g}\n"
-    for n, A in enumerate(underlyingParams['As_f']):
-        msg+=f"\t\t\t* A{n}: {A:g}\n"
-    for n, B in enumerate(underlyingParams['As_b']):
-        msg+=f"\t\t\t* B{n}: {B:g}\n"
+    for n, E in enumerate(underlyingParams["Es_f"]):
+        msg += f"\t\t\t* E{n}: {E:g}\n"
+    for n, F in enumerate(underlyingParams["Es_b"]):
+        msg += f"\t\t\t* F{n}: {F:g}\n"
+    for n, A in enumerate(underlyingParams["As_f"]):
+        msg += f"\t\t\t* A{n}: {A:g}\n"
+    for n, B in enumerate(underlyingParams["As_b"]):
+        msg += f"\t\t\t* B{n}: {B:g}\n"
     logger.info(msg)
 
-
     # We provide a set of basic plotting routines that also return the plt.Figure, and axis
-    # this way we can modify them after the basic plots have been done. 
+    # this way we can modify them after the basic plots have been done.
 
     # #####################
     # 1. Plot the raw correlator data
     # #####################
     fig, ax = plotting.plotCorrelator(
-        C = gv.gvar(Cest,Cerr),
-        abscissa = abscissa,
-        color = plotting.style.MAIN_COLORS['primary'],
-        connectDots = True,
-        label = "Sampled Data"
+        C=gv.gvar(Cest, Cerr),
+        abscissa=abscissa,
+        color=plotting.style.MAIN_COLORS["primary"],
+        connectDots=True,
+        label="Sampled Data",
     )
-    ax.plot(
-        abscissa,
-        corrUnderlying,
-        '-k',
-        label = "Underlying"
-    )
+    ax.plot(abscissa, corrUnderlying, "-k", label="Underlying")
     ax.legend()
-    
+
     # simply save the figure into the report folder
-    fig.savefig( ReportFolder/"correlator.pdf" )
+    fig.savefig(ReportFolder / "correlator.pdf")
 
     # #####################
     # 2. Plot the fit result
     # #####################
-    
+
     # First plot the raw data once again to compare the best fit
     fig, ax = plotting.plotCorrelator(
-        C = gv.gvar(Cest,Cerr),
-        abscissa = abscissa,
-        color = plotting.style.MAIN_COLORS['primary'],
-        connectDots = False,
-        label = "Sampled Data"
+        C=gv.gvar(Cest, Cerr),
+        abscissa=abscissa,
+        color=plotting.style.MAIN_COLORS["primary"],
+        connectDots=False,
+        label="Sampled Data",
     )
-    
-    # Now finally plot the best 5 fits. 
-    # For a comprehensive report you might want to fit all, but not in the same file. 
+
+    # Now finally plot the best 5 fits.
+    # For a comprehensive report you might want to fit all, but not in the same file.
     # The legend can become quite cluttered for many fits
-    for fitID,fit in enumerate(fitResultList[:5]):
+    for fitID, fit in enumerate(fitResultList[:5]):
         # We can add a textbox below the plot for the best fit
         # The best fit is the first element of the list as by our sorting above
-        putFitReport = (fitID == 0)
+        putFitReport = fitID == 0
 
         fig, ax = plotting.plotFit(
-            fit = fit,
-            figAxTuple = (fig,ax),
-            plotData = False,
-            label = rf"{fit.short()}",
-            putFitReport = putFitReport,
+            fit=fit,
+            figAxTuple=(fig, ax),
+            plotData=False,
+            label=rf"{fit.short()}",
+            putFitReport=putFitReport,
             # the best fit should be plotted over all others
-            zorder = 5 - fitID
+            zorder=5 - fitID,
         )
 
     ax.legend()
 
-    fig.savefig( ReportFolder/"fits.pdf",bbox_inches="tight" )
+    fig.savefig(ReportFolder / "fits.pdf", bbox_inches="tight")
 
     # #####################
     # 3. Plot a Param per AIC
     # #####################
-    fig, axs = plotting.plotParameterPerAIC('E0', fitResultList)
+    fig, axs = plotting.plotParameterPerAIC("E0", fitResultList)
     axs[0].set_ylabel(r"$E_0$")
 
-    fig.savefig( ReportFolder/"E0PerAIC.pdf",bbox_inches="tight" )
+    fig.savefig(ReportFolder / "E0PerAIC.pdf", bbox_inches="tight")
 
-    fig, axs = plotting.plotParameterPerAIC('F0', fitResultList)
+    fig, axs = plotting.plotParameterPerAIC("F0", fitResultList)
     axs[0].set_ylabel(r"$F_0$")
 
-    fig.savefig( ReportFolder/"F0PerAIC.pdf",bbox_inches="tight" )
+    fig.savefig(ReportFolder / "F0PerAIC.pdf", bbox_inches="tight")
+
 
 # end def main
 
@@ -422,28 +450,33 @@ if __name__ == "__main__":
     # define a logger
     logger = logging.getLogger(__name__)
 
-    # and set the default logging interface 
-    logging.basicConfig(format='Analysis %(asctime)s~> %(message)s', level=logging.INFO, datefmt='%H:%M:%S')
-    
-    with logging_redirect_tqdm():
-    
-        # Define the command-line arguments
-        CLIParser = argparse.ArgumentParser(
-            prog='Data Analyser'
-        )
+    # and set the default logging interface
+    logging.basicConfig(
+        format="Analysis %(asctime)s~> %(message)s",
+        level=logging.INFO,
+        datefmt="%H:%M:%S",
+    )
 
-        CLIParser.add_argument('-T', type = float, required = True )
-        CLIParser.add_argument('-Nt', type = int, required = True )
-        CLIParser.add_argument('-Nconf', type = int, required = True )
-        CLIParser.add_argument('--StN', action='store_true')
-        CLIParser.add_argument('--doBootstrapFits', action='store_true')
-        CLIParser.add_argument('--doCorrelatedFits', action='store_true')
-        CLIParser.add_argument('-Nbst', type = int, required = False, default = None )
-        CLIParser.add_argument('-cacheFolder', type = str, required = False, default = "Cache")
-        CLIParser.add_argument('-reportFolder', type = str, required = False, default = "Report")
+    with logging_redirect_tqdm():
+
+        # Define the command-line arguments
+        CLIParser = argparse.ArgumentParser(prog="Data Analyser")
+
+        CLIParser.add_argument("-T", type=float, required=True)
+        CLIParser.add_argument("-Nt", type=int, required=True)
+        CLIParser.add_argument("-Nconf", type=int, required=True)
+        CLIParser.add_argument("--StN", action="store_true")
+        CLIParser.add_argument("--doBootstrapFits", action="store_true")
+        CLIParser.add_argument("--doCorrelatedFits", action="store_true")
+        CLIParser.add_argument("-Nbst", type=int, required=False, default=None)
+        CLIParser.add_argument(
+            "-cacheFolder", type=str, required=False, default="Cache"
+        )
+        CLIParser.add_argument(
+            "-reportFolder", type=str, required=False, default="Report"
+        )
 
         # Parse the CLI arguments
         CLIargs = CLIParser.parse_args()
 
         main(CLIargs)
-

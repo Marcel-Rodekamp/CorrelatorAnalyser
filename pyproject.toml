@@ -1,0 +1,28 @@
+[tool.poetry]
+name = "correlatoranalyser"
+version = "0.1.0"
+description = ""
+authors = [
+    "Marcel Rodekamp <marcel.rodekamp@ur.de>",
+    "Lea Kutsch <l.kutsch@fz-juelich.de>",
+    "Giovanni Pederiva <g.pederiva@fz-juelich.de>"
+]
+readme = "README.md"
+
+[tool.poetry.dependencies]
+python = "^3.10"
+numpy = "^2.1.1"
+gvar = "^13.1.1"
+lsqfit = "^13.2.3"
+matplotlib = "^3.9.2"
+pytest = "^8.3.2"
+tqdm = "^4.66.5"
+h5py = "^3.11.0"
+pre-commit = "^3.8.0"
+black = "^24.8.0"
+typing-extensions = "^4.12.2"
+
+
+[build-system]
+requires = ["poetry-core"]
+build-backend = "poetry.core.masonry.api"
