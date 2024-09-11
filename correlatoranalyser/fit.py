@@ -142,7 +142,7 @@ def fit(*,
         
         #Do the fit with lsqfit
         try:
-            res["central value fit"] = lsqfit.nonlinear_fit(**args) #FitResult()
+            res["central value fit"] = lsqfit.nonlinear_fit(**args) #FitResult() 
             
         except Exception as e:
             msg =  f"Fit Failed: :\n"
