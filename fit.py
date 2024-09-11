@@ -102,6 +102,7 @@ def fit(*,
     if prior is None and po is None: raise ValueError(f"at least one of prior and po needs to be defined")
     args["prior" if prior is not None else "po"] = prior if prior is not None else po
     
+    # res = {}
     res = FitResult(ts=abscissa[0],te=abscissa[-1])
 
     #prepare data for the central value fit:
@@ -141,7 +142,8 @@ def fit(*,
         
         #Do the fit with lsqfit
         try:
-            res["central value fit"] = lsqfit.nonlinear_fit(**args)
+            res["central value fit"] = lsqfit.nonlinear_fit(**args) #FitResult()
+            
         except Exception as e:
             msg =  f"Fit Failed: {self}:\n"
             for key,val in args.items():
@@ -225,9 +227,6 @@ class FitResult:
         aug_chi2_bst = np.zeros(Nbst)
         p_value_bst = np.zeros(Nbst)
         Q_value_bst = np.zeros(Nbst)
-
-
-
 
     # def eval_fit_model(abscissa:np.ndarray, params:dict = None)->np.ndarray:
 
@@ -391,44 +390,48 @@ if __name__ == "__main__":
     #test_defensive()
 
     abscissa: np.ndarray = np.arange(0,Nt)
-    # data: np.ndarray[gv.GVar] = gv.gvar(
-    #     np.exp(-0.2*abscissa),
-    #     0.1*np.exp(0.001*abscissa)
-    # )
-    data  = np.random.normal(np.exp(-0.2*abscissa),0.1*np.exp(0.001*abscissa),size= (Nconf,Nt)) 
-    data_bst = np.zeros((Nbst, Nt))
-    for nbst in range(Nbst):
-        data_bst[nbst] = np.mean(data[np.random.randint(0,Nconf,size=(Nconf,))],axis=0)
+    data: np.ndarray[gv.GVar] = gv.gvar(
+        np.exp(-0.2*abscissa),
+        0.1*np.exp(0.001*abscissa)
+    )
+    # data  = np.random.normal(np.exp(-0.2*abscissa),0.1*np.exp(0.001*abscissa),size= (Nconf,Nt)) 
+    # data_bst = np.zeros((Nbst, Nt))
+    # for nbst in range(Nbst):
+    #     data_bst[nbst] = np.mean(data[np.random.randint(0,Nconf,size=(Nconf,))],axis=0)
     
     # plt.errorbar(abscissa,gv.mean(data),gv.sdev(data),capsize=2)
     # plt.yscale("log")
-    print(data_bst.mean(axis=0))
-    print(data_bst.std(axis=0))
-    res =fit(
-        abscissa = abscissa,
-        bootstrap_ordinate_est=data_bst,
-        bootstrap_ordinate_cov=np.cov(data_bst,rowvar=False),
-        prior = {
-            "E0": gv.gvar(0.5,100), #flat prior
-            "A0": gv.gvar(0.5,100)
-        },
-        model= lambda t,p: p["A0"]*np.exp(-t*p["E0"]),
-        bootstrap_fit=True,
-        bootstrap_fit_resample_prior=False,
-        central_value_fit=False,
-        bootstrap_fit_correlated=True
-    )
-
-    # # uncorrelated central value fit:
-    # res = fit(
+    # print(data_bst.mean(axis=0))
+    # print(data_bst.std(axis=0))
+    # res =fit(
     #     abscissa = abscissa,
-    #     ordinate_est = gv.mean(data),
-    #     ordinate_var = gv.var(data),
+    #     bootstrap_ordinate_est=data_bst,
+    #     bootstrap_ordinate_cov=np.cov(data_bst,rowvar=False),
     #     prior = {
     #         "E0": gv.gvar(0.5,100), #flat prior
     #         "A0": gv.gvar(0.5,100)
     #     },
-    #     model= lambda t,p: p["A0"]*np.exp(-t*p["E0"])
+    #     model= lambda t,p: p["A0"]*np.exp(-t*p["E0"]),
+    #     bootstrap_fit=True,
+    #     bootstrap_fit_resample_prior=False,
+    #     central_value_fit=False,
+    #     bootstrap_fit_correlated=True
     # )
+
+    # # uncorrelated central value fit:
+    res = fit(
+        abscissa = abscissa,
+        ordinate_est = gv.mean(data),
+        ordinate_var = gv.var(data),
+        prior = {
+            "E0": gv.gvar(0.5,100), #flat prior
+            "A0": gv.gvar(0.5,100)
+        },
+        model= lambda t,p: p["A0"]*np.exp(-t*p["E0"])
+    )
     print(res)
+
+    #print dict res:
+    for key,value in res.items():
+        print(f"{key}:{value}")
     # plt.show()
