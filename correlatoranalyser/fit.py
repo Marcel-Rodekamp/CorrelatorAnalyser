@@ -4,6 +4,7 @@ import matplotlib.pyplot as plt
 import lsqfit
 import warnings
 import pytest
+import h5py
 from dataclasses import dataclass
 
 
@@ -17,7 +18,7 @@ class FitResult:
     best_fit_param: dict | None = None
     chi2: float | None = None
     aug_chi2: float | None = None
-    p_value: float | None = None
+
     Q_value: float | None = None
     AIC: float | None = None
     aug_AIC: float | None = None
@@ -26,7 +27,7 @@ class FitResult:
     best_fit_param_bst: dict | None = None
     chi2_bst: np.ndarray | None = None
     aug_chi2_bst: np.ndarray | None = None
-    p_value_bst: np.ndarray | None = None
+
     Q_value_bst: np.ndarray | None = None
     AIC_bst: np.ndarray | None = None
     aug_AIC_bst: np.ndarray | None = None
@@ -37,15 +38,15 @@ class FitResult:
         self.chi2_bst = np.zeros(Nbst)
         self.best_fit_param_bst = {}
         self.aug_chi2_bst = np.zeros(Nbst)
-        self.p_value_bst = np.zeros(Nbst)
         self.Q_value_bst = np.zeros(Nbst)
         self.AIC_bst = np.zeros(Nbst)
         self.aug_AIC_bst = np.zeros(Nbst)
 
-    def calc_AIC(self, nlf: lsqfit.nonlinear_fit) -> float:
-        # lsqfit provides priorless fit
+    def calc_AIC(self, nlf: lsqfit.nonlinear_fit, augmented: bool = False) -> float:
+        if augmented:
+            return nlf.chi2 + 2 * len(nlf.p) - 2 * len(nlf.x)
         correction: float = 0.0
-        if nlf.prior is not None:
+        if nlf.prior is not None:  # if prior is none then AIC = aug_AIC
             correction = np.sum(
                 [
                     (nlf.prior[key].mean - nlf.p[key].mean) ** 2
@@ -55,33 +56,67 @@ class FitResult:
             )
         return nlf.chi2 + 2 * len(nlf.p) - 2 * len(nlf.x) - correction
 
+    def calc_aug_chi2(self, nlf: lsqfit.nonlinear_fit) -> float:
+        correction: float = 0.0
+        if (
+            nlf.prior is not None
+        ):  # if prior is None, then the chi2 from lsqfit is already the priorless chi2
+            correction = np.sum(
+                [
+                    (nlf.prior[key].mean - nlf.p[key].mean) ** 2
+                    / nlf.prior[key].sdev ** 2
+                    for key in nlf.prior.keys()
+                ]
+            )
+        return nlf.chi2 - correction
+
     """save the interesting results from a lsqfit, if nbst is given then save in corresponding row nbst of the bootstrap parameters"""
 
     def import_from_nonlinear_fit(
         self, nlf: lsqfit.nonlinear_fit, nbst: None | int = None
     ) -> None:
-        # print(nlf.p)
-        # print(self.best_fit_param_bst)
         if nbst is not None:
             self.best_fit_param_bst[nbst] = nlf.p
-            self.chi2_bst[nbst] = nlf.chi2
-            # self.aug_chi2_bst[nbst] =
-            # self.p_value_bst[nbst] =
+            self.chi2_bst[nbst] = self.calc_aug_chi2(nlf)
+            self.aug_chi2_bst[nbst] = nlf.chi2
             self.Q_value_bst[nbst] = nlf.Q
             self.AIC_bst[nbst] = self.calc_AIC(nlf)
+            self.aug_AIC_bst[nbst] = self.calc_AIC(nlf, augmented=True)
         else:
             self.num_dof = nlf.dof
             self.best_fit_param = nlf.p
-            self.chi2 = nlf.chi2
-            # self.aug_chi2 =
-            # self.p_value = nlf.
+            self.chi2 = self.calc_aug_chi2(nlf)
+            self.aug_chi2 = nlf.chi2
             self.Q_value = nlf.Q
             self.AIC = self.calc_AIC(nlf)
+            self.aug_AIC = self.calc_AIC(nlf, augmented=True)
         return
 
     # node: path in h5 file: h5_handel: h5File object
-    def serialize(h5_handel: bool, node: str) -> None:
-        # handle = "r+" if h5_handel else "w"
+    def serialize(self, h5_handle: h5py.File, node: str) -> None:
+        if self.best_fit_param is None and self.best_fit_param_bst is None:
+            raise ValueError(
+                f"Import data from a fit first before saving the data in an h5 file.)"
+            )
+
+        # for key in self.best_fit_param:
+        #          h5_handle.create_dataset(f"{node}/best_fit_param/{key}",data = self.best_fit_param[key])
+        # # for key in self.best_fit_param:
+        #     #print(key)
+        # for attribute, value in self.__dict__.items():
+        #     # print("serialize funcition")
+        #     if type(value) is dict:
+        #         print(value)
+        #         for key in value:
+        #             print(key,value[key])
+        #         # prin
+        #         # t("dict")
+        #         # print(attribute, '=', value)
+        #         # pass
+
+        #         #     h5_handle.create_dataset(f"{node}/{attribute}/{item}",data = item_value)
+        # else:
+        #     h5_handle.create_dataset(f"{node}/{attribute}",data = value)
         return
 
     # def set_bootstrap_result_true(self,Nbst):
@@ -252,7 +287,9 @@ def fit(
     else:
         res = FitResult(ts=abscissa[0], te=abscissa[-1])
 
-    print("Initial FitResult object\n", res)
+    print("\nInitial FitResult object\n")
+    for attribute, value in res.__dict__.items():
+        print(attribute, "=", value, type(value))
     # prepare data for the central value fit:
     if central_value_fit:
         # for the uncorrelated fit check in which way the variance is given and save in temp
@@ -315,6 +352,11 @@ def fit(
             raise RuntimeError(f"{msg}\n{e}")
 
     if not bootstrap_fit:
+        print("\nAfter calling import_from_nonlinear_fit: \n")
+        for attribute, value in res.__dict__.items():
+            print(attribute, "=", value, type(value))
+        with h5py.File("FitResult.h5", "w") as h5f:
+            res.serialize(h5_handle=h5f, node=f"ts{abscissa[0]}_te{abscissa[-1]}")
         return res  # return fit results
 
     # res.Nbst=Nbst
@@ -728,33 +770,32 @@ if __name__ == "__main__":
     # )
 
     # # # uncorrelated central value fit:
-    # res = fit(
-    #     abscissa=abscissa,
-    #     ordinate_est=gv.mean(data),
-    #     ordinate_var=gv.var(data),
-    #     prior={"E0": gv.gvar(0.5, 100), "A0": gv.gvar(0.5, 100)},  # flat prior
-    #     model=lambda t, p: p["A0"] * np.exp(-t * p["E0"]),
-    # )
-
-    # bootrtrap and cental value fit:
     res = fit(
         abscissa=abscissa,
         ordinate_est=gv.mean(data),
         ordinate_var=gv.var(data),
-        bootstrap_ordinate_est=data_bst,
-        bootstrap_ordinate_cov=np.cov(data_bst, rowvar=False),
-        # prior = {
-        #     "E0": gv.gvar(0.5,100), #flat prior
-        #     "A0": gv.gvar(0.5,100)
-        # },
-        p0={"E0": 0.5, "A0": 0.5},
+        prior={"E0": gv.gvar(0.5, 100), "A0": gv.gvar(0.5, 100)},  # flat prior
         model=lambda t, p: p["A0"] * np.exp(-t * p["E0"]),
-        bootstrap_fit=True,
-        bootstrap_fit_resample_prior=False,
-        bootstrap_fit_correlated=True,
     )
 
-    print("After calling import_from_nonlinear_fit: \nAIC:", res.AIC)
+    # bootrtrap and cental value fit:
+    # res = fit(
+    #     abscissa=abscissa,
+    #     ordinate_est=gv.mean(data),
+    #     ordinate_var=gv.var(data),
+    #     bootstrap_ordinate_est=data_bst,
+    #     bootstrap_ordinate_cov=np.cov(data_bst, rowvar=False),
+    #     # prior = {
+    #     #     "E0": gv.gvar(0.5,100), #flat prior
+    #     #     "A0": gv.gvar(0.5,100)
+    #     # },
+    #     p0={"E0": 0.5, "A0": 0.5},
+    #     model=lambda t, p: p["A0"] * np.exp(-t * p["E0"]),
+    #     bootstrap_fit=True,
+    #     bootstrap_fit_resample_prior=False,
+    #     bootstrap_fit_correlated=True,
+    # )
+
     # # print dict res:
     # for key, value in res.items():
     #     print(f"{key}:{value}")
