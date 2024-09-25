@@ -99,21 +99,26 @@ class FitResult:
             )
         # for key, value in self.best_fit_param.items(): print(key,value)
         for field in fields(self):
-            field_value = getattr(self,field.name)
-            #print(f"{field.name} with value {field_value} field.type:{field.type} type(field_value): {type(field_value)} is None: {field_value is None } is dict: {type(field_value)==gv.BufferDict}")
-            if type(field_value) == gv.BufferDict: #for best_param(_nbst)
-                for key,value in field_value.items():
+            field_value = getattr(self, field.name)
+            # print(f"{field.name} with value {field_value} field.type:{field.type} type(field_value): {type(field_value)} is None: {field_value is None } is dict: {type(field_value)==gv.BufferDict}")
+            if type(field_value) == gv.BufferDict:  # for best_param(_nbst)
+                for key, value in field_value.items():
                     # print(f'{field.name}/{key}/value = {value}, value.mean = {gv.mean(value)}, value.sdev={ gv.sdev(value)} ' )
                     # split gvar data in estimate(est) and error (err) for saving in h5 file
-                    h5_handle.create_dataset(f"{node}/{field.name}/{key}/est", data= gv.mean(value))
-                    h5_handle.create_dataset(f"{node}/{field.name}/{key}/err", data= gv.sdev(value))
+                    h5_handle.create_dataset(
+                        f"{node}/{field.name}/{key}/est", data=gv.mean(value)
+                    )
+                    h5_handle.create_dataset(
+                        f"{node}/{field.name}/{key}/err", data=gv.sdev(value)
+                    )
             elif field_value is None:
-                h5_handle.create_dataset(f"{node}/{field.name}", data = field_value,shape=())
+                h5_handle.create_dataset(
+                    f"{node}/{field.name}", data=field_value, shape=()
+                )
             else:
                 # print(f'save {field.name} in {h5_handle}/{node}/{field.name}')
-                h5_handle.create_dataset(f"{node}/{field.name}", data = field_value)
+                h5_handle.create_dataset(f"{node}/{field.name}", data=field_value)
         return
-
 
         # for key in self.best_fit_param:
         #          h5_handle.create_dataset(f"{node}/best_fit_param/{key}",data = self.best_fit_param[key])
@@ -133,7 +138,6 @@ class FitResult:
         #         #     h5_handle.create_dataset(f"{node}/{attribute}/{item}",data = item_value)
         # else:
         #     h5_handle.create_dataset(f"{node}/{attribute}",data = value)
-        
 
     # def eval_fit_model(abscissa:np.ndarray, params:dict = None)->np.ndarray:
 
@@ -291,9 +295,13 @@ def fit(
     # res = {}
 
     if bootstrap_fit:
-        res = FitResult(ts=abscissa[0], te=abscissa[-1], Nbst=Nbst) #prepare res for saving the bootstrap and possible central value fit results
+        res = FitResult(
+            ts=abscissa[0], te=abscissa[-1], Nbst=Nbst
+        )  # prepare res for saving the bootstrap and possible central value fit results
     else:
-        res = FitResult(ts=abscissa[0], te=abscissa[-1]) #prepare res for central value fit results only
+        res = FitResult(
+            ts=abscissa[0], te=abscissa[-1]
+        )  # prepare res for central value fit results only
 
     # print("\nInitial FitResult object\n")
     # for attribute, value in res.__dict__.items():
@@ -397,7 +405,9 @@ def fit(
                 prior_bst[key] = gv.gvar(gv.sample(prior[key], 1), prior[key].sdev)
             args["prior"] = prior_bst
         try:
-            res.import_from_nonlinear_fit(lsqfit.nonlinear_fit(**args), nbst) # Do the fit with lsqfit
+            res.import_from_nonlinear_fit(
+                lsqfit.nonlinear_fit(**args), nbst
+            )  # Do the fit with lsqfit
         except Exception as e:
             msg = f"Fit Failed: :\n"
             for key, val in args.items():
