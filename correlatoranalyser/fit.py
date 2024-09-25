@@ -114,6 +114,7 @@ class FitResult:
                 h5_handle.create_dataset(f"{node}/{field.name}", data = field_value)
         return
 
+
         # for key in self.best_fit_param:
         #          h5_handle.create_dataset(f"{node}/best_fit_param/{key}",data = self.best_fit_param[key])
         # # for key in self.best_fit_param:
