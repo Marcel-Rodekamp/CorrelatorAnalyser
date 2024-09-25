@@ -5,7 +5,7 @@ import lsqfit
 import warnings
 import pytest
 import h5py
-from dataclasses import dataclass
+from dataclasses import dataclass, fields
 
 
 @dataclass
@@ -15,16 +15,15 @@ class FitResult:
     ts: int  # startpoint abscissa
     te: int  # endpoint abscissa
     num_dof: int = None
-    best_fit_param: dict | None = None
+    best_fit_param: gv.BufferDict | None = None
     chi2: float | None = None
     aug_chi2: float | None = None
-
     Q_value: float | None = None
     AIC: float | None = None
     aug_AIC: float | None = None
     # bootstrap fit results
     Nbst: int | None = None
-    best_fit_param_bst: dict | None = None
+    best_fit_param_bst: gv.BufferDict | None = None
     chi2_bst: np.ndarray | None = None
     aug_chi2_bst: np.ndarray | None = None
 
@@ -33,7 +32,7 @@ class FitResult:
     aug_AIC_bst: np.ndarray | None = None
 
     def __post_init__(self):
-        if Nbst is None:
+        if self.Nbst is None:
             return
         self.chi2_bst = np.zeros(Nbst)
         self.best_fit_param_bst = {}
@@ -98,6 +97,22 @@ class FitResult:
             raise ValueError(
                 f"Import data from a fit first before saving the data in an h5 file.)"
             )
+        # for key, value in self.best_fit_param.items(): print(key,value)
+        for field in fields(self):
+            field_value = getattr(self,field.name)
+            #print(f"{field.name} with value {field_value} field.type:{field.type} type(field_value): {type(field_value)} is None: {field_value is None } is dict: {type(field_value)==gv.BufferDict}")
+            if type(field_value) == gv.BufferDict: #for best_param(_nbst)
+                for key,value in field_value.items():
+                    # print(f'{field.name}/{key}/value = {value}, value.mean = {gv.mean(value)}, value.sdev={ gv.sdev(value)} ' )
+                    # split gvar data in estimate(est) and error (err) for saving in h5 file
+                    h5_handle.create_dataset(f"{node}/{field.name}/{key}/est", data= gv.mean(value))
+                    h5_handle.create_dataset(f"{node}/{field.name}/{key}/err", data= gv.sdev(value))
+            elif field_value is None:
+                h5_handle.create_dataset(f"{node}/{field.name}", data = field_value,shape=())
+            else:
+                # print(f'save {field.name} in {h5_handle}/{node}/{field.name}')
+                h5_handle.create_dataset(f"{node}/{field.name}", data = field_value)
+        return
 
         # for key in self.best_fit_param:
         #          h5_handle.create_dataset(f"{node}/best_fit_param/{key}",data = self.best_fit_param[key])
@@ -117,15 +132,7 @@ class FitResult:
         #         #     h5_handle.create_dataset(f"{node}/{attribute}/{item}",data = item_value)
         # else:
         #     h5_handle.create_dataset(f"{node}/{attribute}",data = value)
-        return
-
-    # def set_bootstrap_result_true(self,Nbst):
-    #     self.Nbst = Nbst
-    #     self.chi2_bst = np.zeros(Nbst)
-    #     self.best_fit_param_bst = {}
-    #     self.aug_chi2_bst = np.zeros(Nbst)
-    #     self.p_value_bst = np.zeros(Nbst)
-    #     self.Q_value_bst = np.zeros(Nbst)
+        
 
     # def eval_fit_model(abscissa:np.ndarray, params:dict = None)->np.ndarray:
 
@@ -283,14 +290,14 @@ def fit(
     # res = {}
 
     if bootstrap_fit:
-        res = FitResult(ts=abscissa[0], te=abscissa[-1], Nbst=Nbst)
+        res = FitResult(ts=abscissa[0], te=abscissa[-1], Nbst=Nbst) #prepare res for saving the bootstrap and possible central value fit results
     else:
-        res = FitResult(ts=abscissa[0], te=abscissa[-1])
+        res = FitResult(ts=abscissa[0], te=abscissa[-1]) #prepare res for central value fit results only
 
-    print("\nInitial FitResult object\n")
-    for attribute, value in res.__dict__.items():
-        print(attribute, "=", value, type(value))
-    # prepare data for the central value fit:
+    # print("\nInitial FitResult object\n")
+    # for attribute, value in res.__dict__.items():
+    #     print(attribute, "=", value, type(value))
+    # # prepare data for the central value fit:
     if central_value_fit:
         # for the uncorrelated fit check in which way the variance is given and save in temp
         if not central_value_fit_correlated:
@@ -352,17 +359,13 @@ def fit(
             raise RuntimeError(f"{msg}\n{e}")
 
     if not bootstrap_fit:
-        print("\nAfter calling import_from_nonlinear_fit: \n")
-        for attribute, value in res.__dict__.items():
-            print(attribute, "=", value, type(value))
+        # print("\nAfter calling import_from_nonlinear_fit: \n")
+        # for attribute, value in res.__dict__.items():
+        #     print(attribute, "=", value, type(value))
         with h5py.File("FitResult.h5", "w") as h5f:
-            res.serialize(h5_handle=h5f, node=f"ts{abscissa[0]}_te{abscissa[-1]}")
+            res.serialize(h5_handle=h5f, node=f"timeslice_{abscissa[0]}_{abscissa[-1]}")
         return res  # return fit results
 
-    # res.Nbst=Nbst
-    # res.set_bootstrap_result_true(Nbst)
-    # print(res)
-    # res["bootstrap fit"] = FitResult(abscissa[0],abscissa[-1],Nbst=Nbst)#np.empty(Nbst, dtype=object)
     # prepare data for a bootstrap fit
     for nbst in range(Nbst):
         # for uncorrelated bootstrap fit check in which way the variance is given and save in temp
@@ -393,10 +396,7 @@ def fit(
                 prior_bst[key] = gv.gvar(gv.sample(prior[key], 1), prior[key].sdev)
             args["prior"] = prior_bst
         try:
-            res.import_from_nonlinear_fit(lsqfit.nonlinear_fit(**args), nbst)
-            # res["bootstrap fit"][nbst] = lsqfit.nonlinear_fit(
-            #    **args
-            # )  # Do the fit with lsqfit
+            res.import_from_nonlinear_fit(lsqfit.nonlinear_fit(**args), nbst) # Do the fit with lsqfit
         except Exception as e:
             msg = f"Fit Failed: :\n"
             for key, val in args.items():
