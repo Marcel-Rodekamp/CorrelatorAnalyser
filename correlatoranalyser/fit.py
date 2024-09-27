@@ -91,7 +91,7 @@ class FitResult:
             self.aug_AIC = self.calc_AIC(nlf, augmented=True)
         return
 
-    # node: path in h5 file: h5_handel: h5File object
+    # node: path in h5 file (specifies the ) h5_handel: h5File object
     def serialize(self, h5_handle: h5py.File, node: str) -> None:
         if self.best_fit_param is None and self.best_fit_param_bst is None:
             raise ValueError(
@@ -101,9 +101,8 @@ class FitResult:
         for field in fields(self):
             field_value = getattr(self, field.name)
             # print(f"{field.name} with value {field_value} field.type:{field.type} type(field_value): {type(field_value)} is None: {field_value is None } is dict: {type(field_value)==gv.BufferDict}")
-            if type(field_value) == gv.BufferDict:  # for best_param(_nbst)
+            if type(field_value) == gv.BufferDict:  # for best_param
                 for key, value in field_value.items():
-                    # print(f'{field.name}/{key}/value = {value}, value.mean = {gv.mean(value)}, value.sdev={ gv.sdev(value)} ' )
                     # split gvar data in estimate(est) and error (err) for saving in h5 file
                     h5_handle.create_dataset(
                         f"{node}/{field.name}/{key}/est", data=gv.mean(value)
@@ -112,13 +111,66 @@ class FitResult:
                         f"{node}/{field.name}/{key}/err", data=gv.sdev(value)
                     )
             elif field_value is None:
-                h5_handle.create_dataset(
-                    f"{node}/{field.name}", data=field_value, shape=()
-                )
+                pass
+                # h5_handle.create_dataset(
+                #     f"{node}/{field.name}", data=field_value, shape=()
+                # )
+            elif (
+                field.name == "best_fit_param_bst"
+            ):  # type(field_value) == dict: #for best_fit_param_bst, when not None
+                for nbst, nbst_param in field_value.items():
+                    for key, value in nbst_param.items():
+                        h5_handle.create_dataset(
+                            f"{node}/{field.name}/{nbst}/{key}/est", data=gv.mean(value)
+                        )
+                        h5_handle.create_dataset(
+                            f"{node}/{field.name}/{nbst}/{key}/err", data=gv.sdev(value)
+                        )
             else:
                 # print(f'save {field.name} in {h5_handle}/{node}/{field.name}')
                 h5_handle.create_dataset(f"{node}/{field.name}", data=field_value)
         return
+
+    # read in data from a fit results in form of a h5 file and save as an FitResult object
+    @staticmethod
+    def deserialize(h5_handle: h5py.File, node: str) -> "FitResult":
+        # check if h5file contains bootstrap data:
+        te = h5_handle[f"{node}/te"][()]
+        ts = h5_handle[f"{node}/ts"][()]
+        if "Nbst" in h5_handle[node]:
+            Nbst = h5_handle[f"{node}/Nbst"][()]
+            res = FitResult(te=te, ts=ts, Nbst=Nbst)
+        else:
+            res = FitResult(te=te, ts=ts)
+        # read in the data:
+        for key in h5_handle[node]:
+            if isinstance(h5_handle[f"{node}/{key}"], h5py.Dataset):
+                setattr(res, key, h5_handle[f"{node}/{key}"][()])
+            elif isinstance(
+                h5_handle[f"{node}/{key}"], h5py.Group
+            ):  # best_fit_param and best__fit_param_bst
+                if key == "best_fit_param":
+                    key_value = gv.BufferDict()
+                    for item in h5_handle[f"{node}/{key}"]:  #'A0',E0' etc.
+                        # print(item)
+                        est = h5_handle[f"{node}/{key}/{item}/est"][()]
+                        err = h5_handle[f"{node}/{key}/{item}/err"][()]
+                        key_value[item] = gv.gvar(est, err)
+                    setattr(res, key, key_value)
+                elif key == "best_fit_param_bst":
+                    for nbst in h5_handle[f"{node}/{key}"]:  # iterate over bootstrap id
+                        key_value = gv.BufferDict()
+                        for item in h5_handle[f"{node}/{key}/{nbst}"]:  #'A0',E0' etc.
+                            # print('bootstrap',nbst,item)
+                            est = h5_handle[f"{node}/{key}/{nbst}/{item}/est"][()]
+                            err = h5_handle[f"{node}/{key}/{nbst}/{item}/err"][()]
+                            key_value[item] = gv.gvar(est, err)
+                        # print(key_value)
+                        # setattr(res,key[int(nbst)],key_value)
+                        res.best_fit_param_bst[int(nbst)] = key_value
+                        # print(getattr(res,key),int(nbst))
+        # print('After deserialize: ',res)
+        return res
 
         # for key in self.best_fit_param:
         #          h5_handle.create_dataset(f"{node}/best_fit_param/{key}",data = self.best_fit_param[key])
@@ -371,8 +423,12 @@ def fit(
         # print("\nAfter calling import_from_nonlinear_fit: \n")
         # for attribute, value in res.__dict__.items():
         #     print(attribute, "=", value, type(value))
-        with h5py.File("FitResult.h5", "w") as h5f:
+        with h5py.File("../Report/FitResult.h5", "w") as h5f:
             res.serialize(h5_handle=h5f, node=f"timeslice_{abscissa[0]}_{abscissa[-1]}")
+            # print('Before: ',res)
+            FitResult.deserialize(
+                h5_handle=h5f, node=f"timeslice_{abscissa[0]}_{abscissa[-1]}"
+            )
         return res  # return fit results
 
     # prepare data for a bootstrap fit
@@ -414,7 +470,15 @@ def fit(
                 msg += f"- {key}: {val}\n"
             msg += f"- nbst: {nbst}\n"
             raise RuntimeError(f"{msg}\n{e}")
-
+    with h5py.File("../Report/FitResult.h5", "w") as h5f:
+        res.serialize(h5_handle=h5f, node=f"timeslice_{abscissa[0]}_{abscissa[-1]}")
+        res2 = FitResult.deserialize(
+            h5_handle=h5f, node=f"timeslice_{abscissa[0]}_{abscissa[-1]}"
+        )
+        # for field in fields(res):
+        #     a = getattr(res,field.name)
+        #     b = getattr(res2,field.name)
+        #     print(a == b)
     return res
 
 
