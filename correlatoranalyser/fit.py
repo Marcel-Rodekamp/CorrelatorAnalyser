@@ -69,6 +69,16 @@ class FitResult:
             )
         return nlf.chi2 - correction
 
+    """function evaluates the fit model for a given abscissa and fit parameters, if no  fit parameters are given the best fit parameters from the fit are used, 
+    returns an np.ndarray with the corresponding ordinate values"""
+    # def eval_model(self,nlf: lsqfit.nonlinear_fit, abscissa: np.ndarray, params_dict: None | dict = None)-> np.ndarray:
+    #     if params_dict is None:
+    #         params_dict = self.p
+    #     ordinate = nlf.fcn(abscissa,params_dict)
+    #         # ordinate = np.print(nlf.fcn(10,nlf.p))
+    #     print(abscissa,ordinate)
+    #     return ordinate
+
     """save the interesting results from a lsqfit, if nbst is given then save in corresponding row nbst of the bootstrap parameters"""
 
     def import_from_nonlinear_fit(
@@ -81,6 +91,7 @@ class FitResult:
             self.Q_value_bst[nbst] = nlf.Q
             self.AIC_bst[nbst] = self.calc_AIC(nlf)
             self.aug_AIC_bst[nbst] = self.calc_AIC(nlf, augmented=True)
+            self.num_dof = nlf.dof
         else:
             self.num_dof = nlf.dof
             self.best_fit_param = nlf.p
@@ -355,9 +366,6 @@ def fit(
             ts=abscissa[0], te=abscissa[-1]
         )  # prepare res for central value fit results only
 
-    # print("\nInitial FitResult object\n")
-    # for attribute, value in res.__dict__.items():
-    #     print(attribute, "=", value, type(value))
     # # prepare data for the central value fit:
     if central_value_fit:
         # for the uncorrelated fit check in which way the variance is given and save in temp
@@ -420,12 +428,8 @@ def fit(
             raise RuntimeError(f"{msg}\n{e}")
 
     if not bootstrap_fit:
-        # print("\nAfter calling import_from_nonlinear_fit: \n")
-        # for attribute, value in res.__dict__.items():
-        #     print(attribute, "=", value, type(value))
         with h5py.File("../Report/FitResult.h5", "w") as h5f:
             res.serialize(h5_handle=h5f, node=f"timeslice_{abscissa[0]}_{abscissa[-1]}")
-            # print('Before: ',res)
             FitResult.deserialize(
                 h5_handle=h5f, node=f"timeslice_{abscissa[0]}_{abscissa[-1]}"
             )
@@ -461,6 +465,7 @@ def fit(
                 prior_bst[key] = gv.gvar(gv.sample(prior[key], 1), prior[key].sdev)
             args["prior"] = prior_bst
         try:
+            # pass
             res.import_from_nonlinear_fit(
                 lsqfit.nonlinear_fit(**args), nbst
             )  # Do the fit with lsqfit
@@ -470,15 +475,12 @@ def fit(
                 msg += f"- {key}: {val}\n"
             msg += f"- nbst: {nbst}\n"
             raise RuntimeError(f"{msg}\n{e}")
+
     with h5py.File("../Report/FitResult.h5", "w") as h5f:
         res.serialize(h5_handle=h5f, node=f"timeslice_{abscissa[0]}_{abscissa[-1]}")
-        res2 = FitResult.deserialize(
-            h5_handle=h5f, node=f"timeslice_{abscissa[0]}_{abscissa[-1]}"
-        )
-        # for field in fields(res):
-        #     a = getattr(res,field.name)
-        #     b = getattr(res2,field.name)
-        #     print(a == b)
+        # res2 = FitResult.deserialize(
+        #     h5_handle=h5f, node=f"timeslice_{abscissa[0]}_{abscissa[-1]}"
+        # )
     return res
 
 
@@ -845,31 +847,32 @@ if __name__ == "__main__":
     # )
 
     # # # uncorrelated central value fit:
-    res = fit(
-        abscissa=abscissa,
-        ordinate_est=gv.mean(data),
-        ordinate_var=gv.var(data),
-        prior={"E0": gv.gvar(0.5, 100), "A0": gv.gvar(0.5, 100)},  # flat prior
-        model=lambda t, p: p["A0"] * np.exp(-t * p["E0"]),
-    )
-
-    # bootrtrap and cental value fit:
     # res = fit(
     #     abscissa=abscissa,
     #     ordinate_est=gv.mean(data),
     #     ordinate_var=gv.var(data),
-    #     bootstrap_ordinate_est=data_bst,
-    #     bootstrap_ordinate_cov=np.cov(data_bst, rowvar=False),
-    #     # prior = {
-    #     #     "E0": gv.gvar(0.5,100), #flat prior
-    #     #     "A0": gv.gvar(0.5,100)
-    #     # },
-    #     p0={"E0": 0.5, "A0": 0.5},
+    #     prior={"E0": gv.gvar(0.5, 100), "A0": gv.gvar(0.5, 100)},  # flat prior
     #     model=lambda t, p: p["A0"] * np.exp(-t * p["E0"]),
-    #     bootstrap_fit=True,
-    #     bootstrap_fit_resample_prior=False,
-    #     bootstrap_fit_correlated=True,
     # )
+
+    # bootrtrap and cental value fit:
+    res = fit(
+        abscissa=abscissa,
+        # ordinate_est=gv.mean(data),
+        # odinate_var=gv.var(data),
+        bootstrap_ordinate_est=data_bst,
+        bootstrap_ordinate_cov=np.cov(data_bst, rowvar=False),
+        # prior = {
+        #     "E0": gv.gvar(0.5,100), #flat prior
+        #     "A0": gv.gvar(0.5,100)
+        # },
+        p0={"E0": 0.5, "A0": 0.5},
+        model=lambda t, p: p["A0"] * np.exp(-t * p["E0"]),
+        bootstrap_fit=True,
+        bootstrap_fit_resample_prior=False,
+        bootstrap_fit_correlated=True,
+        central_value_fit=False,
+    )
 
     # # print dict res:
     # for key, value in res.items():
