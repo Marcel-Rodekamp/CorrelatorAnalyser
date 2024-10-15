@@ -1,6 +1,6 @@
 from dataclasses import dataclass, field
 from pathlib import Path
-from typing import Selfm, List, Dict
+from typing import Self, List, Dict
 from .fit import FitResult
 
 

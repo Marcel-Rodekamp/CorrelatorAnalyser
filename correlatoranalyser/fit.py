@@ -85,7 +85,19 @@ class FitResult:
         self, nlf: lsqfit.nonlinear_fit, nbst: None | int = None
     ) -> None:
         if nbst is not None:
-            self.best_fit_param_bst[nbst] = nlf.p
+            # self.best_fit_param_bst[nbst] = nlf.p
+            for key in list(nlf.p.keys()):  # don't want to store the log value
+                if "log" in key:
+                    key_red = key[4:-1]  # delete 'log(X)' from X
+                    if nbst == 0:
+                        self.best_fit_param_bst[key_red] = np.empty(
+                            self.Nbst, dtype=object
+                        )
+                    self.best_fit_param_bst[key_red][nbst] = np.exp(nlf.p[key])
+                else:
+                    if nbst == 0:
+                        self.best_fit_param_bst[key] = np.empty(self.Nbst, dtype=object)
+                    self.best_fit_param_bst[key][nbst] = np.exp(nlf.p[key])
             self.chi2_bst[nbst] = self.calc_aug_chi2(nlf)
             self.aug_chi2_bst[nbst] = nlf.chi2
             self.Q_value_bst[nbst] = nlf.Q
@@ -94,7 +106,14 @@ class FitResult:
             self.num_dof = nlf.dof
         else:
             self.num_dof = nlf.dof
-            self.best_fit_param = nlf.p
+            # self.best_fit_param = nlf.p
+            self.best_fit_param = {}
+            for key in list(nlf.p.keys()):  # don't want to store the log value
+                if "log" in key:
+                    key_red = key[4:-1]  # delete 'log(X)' from X
+                    self.best_fit_param[key_red] = np.exp(nlf.p[key])
+                else:
+                    self.best_fit_param[key] = np.exp(nlf.p[key])
             self.chi2 = self.calc_aug_chi2(nlf)
             self.aug_chi2 = nlf.chi2
             self.Q_value = nlf.Q
@@ -106,13 +125,13 @@ class FitResult:
     def serialize(self, h5_handle: h5py.File, node: str) -> None:
         if self.best_fit_param is None and self.best_fit_param_bst is None:
             raise ValueError(
-                f"Import data from a fit first before saving the data in an h5 file.)"
+                f"Import data from a fit first before saving the data in an h5 file."
             )
         # for key, value in self.best_fit_param.items(): print(key,value)
         for field in fields(self):
             field_value = getattr(self, field.name)
             # print(f"{field.name} with value {field_value} field.type:{field.type} type(field_value): {type(field_value)} is None: {field_value is None } is dict: {type(field_value)==gv.BufferDict}")
-            if type(field_value) == gv.BufferDict:  # for best_param
+            if type(field_value) == dict:  # for best_param and best_param_bst
                 for key, value in field_value.items():
                     # split gvar data in estimate(est) and error (err) for saving in h5 file
                     h5_handle.create_dataset(
@@ -123,22 +142,18 @@ class FitResult:
                     )
             elif field_value is None:
                 pass
-                # h5_handle.create_dataset(
-                #     f"{node}/{field.name}", data=field_value, shape=()
-                # )
-            elif (
-                field.name == "best_fit_param_bst"
-            ):  # type(field_value) == dict: #for best_fit_param_bst, when not None
-                for nbst, nbst_param in field_value.items():
-                    for key, value in nbst_param.items():
-                        h5_handle.create_dataset(
-                            f"{node}/{field.name}/{nbst}/{key}/est", data=gv.mean(value)
-                        )
-                        h5_handle.create_dataset(
-                            f"{node}/{field.name}/{nbst}/{key}/err", data=gv.sdev(value)
-                        )
+            # elif (
+            #     field.name == "best_fit_param_bst"
+            # ):  # type(field_value) == dict: #for best_fit_param_bst, when not None
+            #     for nbst, nbst_param in field_value.items():
+            #         for key, value in nbst_param.items():
+            #             h5_handle.create_dataset(
+            #                 f"{node}/{field.name}/{nbst}/{key}/est", data=gv.mean(value)
+            #             )
+            #             h5_handle.create_dataset(
+            #                 f"{node}/{field.name}/{nbst}/{key}/err", data=gv.sdev(value)
+            #             )
             else:
-                # print(f'save {field.name} in {h5_handle}/{node}/{field.name}')
                 h5_handle.create_dataset(f"{node}/{field.name}", data=field_value)
         return
 
@@ -160,7 +175,7 @@ class FitResult:
             elif isinstance(
                 h5_handle[f"{node}/{key}"], h5py.Group
             ):  # best_fit_param and best__fit_param_bst
-                if key == "best_fit_param":
+                if key == "best_fit_param" or "best_fit_param_bst":
                     key_value = gv.BufferDict()
                     for item in h5_handle[f"{node}/{key}"]:  #'A0',E0' etc.
                         # print(item)
@@ -168,41 +183,19 @@ class FitResult:
                         err = h5_handle[f"{node}/{key}/{item}/err"][()]
                         key_value[item] = gv.gvar(est, err)
                     setattr(res, key, key_value)
-                elif key == "best_fit_param_bst":
-                    for nbst in h5_handle[f"{node}/{key}"]:  # iterate over bootstrap id
-                        key_value = gv.BufferDict()
-                        for item in h5_handle[f"{node}/{key}/{nbst}"]:  #'A0',E0' etc.
-                            # print('bootstrap',nbst,item)
-                            est = h5_handle[f"{node}/{key}/{nbst}/{item}/est"][()]
-                            err = h5_handle[f"{node}/{key}/{nbst}/{item}/err"][()]
-                            key_value[item] = gv.gvar(est, err)
-                        # print(key_value)
-                        # setattr(res,key[int(nbst)],key_value)
-                        res.best_fit_param_bst[int(nbst)] = key_value
-                        # print(getattr(res,key),int(nbst))
-        # print('After deserialize: ',res)
+                # elif key == "best_fit_param_bst":
+                #     for nbst in h5_handle[f"{node}/{key}"]:  # iterate over bootstrap id
+                #         key_value = gv.BufferDict()
+                #         for item in h5_handle[f"{node}/{key}/{nbst}"]:  #'A0',E0' etc.
+                #             # print('bootstrap',nbst,item)
+                #             est = h5_handle[f"{node}/{key}/{nbst}/{item}/est"][()]
+                #             err = h5_handle[f"{node}/{key}/{nbst}/{item}/err"][()]
+                #             key_value[item] = gv.gvar(est, err)
+                #         # print(key_value)
+                #         # setattr(res,key[int(nbst)],key_value)
+                #         res.best_fit_param_bst[int(nbst)] = key_value
+                #         # print(getattr(res,key),int(nbst))
         return res
-
-        # for key in self.best_fit_param:
-        #          h5_handle.create_dataset(f"{node}/best_fit_param/{key}",data = self.best_fit_param[key])
-        # # for key in self.best_fit_param:
-        #     #print(key)
-        # for attribute, value in self.__dict__.items():
-        #     # print("serialize funcition")
-        #     if type(value) is dict:
-        #         print(value)
-        #         for key in value:
-        #             print(key,value[key])
-        #         # prin
-        #         # t("dict")
-        #         # print(attribute, '=', value)
-        #         # pass
-
-        #         #     h5_handle.create_dataset(f"{node}/{attribute}/{item}",data = item_value)
-        # else:
-        #     h5_handle.create_dataset(f"{node}/{attribute}",data = value)
-
-    # def eval_fit_model(abscissa:np.ndarray, params:dict = None)->np.ndarray:
 
 
 def fit(
@@ -478,9 +471,9 @@ def fit(
 
     with h5py.File("../Report/FitResult.h5", "w") as h5f:
         res.serialize(h5_handle=h5f, node=f"timeslice_{abscissa[0]}_{abscissa[-1]}")
-        # res2 = FitResult.deserialize(
-        #     h5_handle=h5f, node=f"timeslice_{abscissa[0]}_{abscissa[-1]}"
-        # )
+        FitResult.deserialize(
+            h5_handle=h5f, node=f"timeslice_{abscissa[0]}_{abscissa[-1]}"
+        )
     return res
 
 
@@ -790,8 +783,8 @@ def test_defensive(Nt: int = 32, Nbst: int = 100):
 
 
 if __name__ == "__main__":
-    Nt = 10
-    Nbst = 10
+    Nt = 16
+    Nbst = 100
     Nconf = 100
     # abscissa: np.ndarray = np.zeros(Nt)
     # ordinate_est: np.ndarray[gv.GVar] = np.zeros(Nt,dtype=gv.GVar)
@@ -866,14 +859,24 @@ if __name__ == "__main__":
         #     "E0": gv.gvar(0.5,100), #flat prior
         #     "A0": gv.gvar(0.5,100)
         # },
-        p0={"E0": 0.5, "A0": 0.5},
+        # p0={"E0": 0.5, "A0": 0.5},
+        prior={
+            "log(E0)": gv.log(gv.gvar(0.5, 100)),
+            "log(A0)": gv.log(gv.gvar(0.5, 100)),
+        },
         model=lambda t, p: p["A0"] * np.exp(-t * p["E0"]),
         bootstrap_fit=True,
         bootstrap_fit_resample_prior=False,
         bootstrap_fit_correlated=True,
-        central_value_fit=False,
+        central_value_fit=True,
     )
+    # print(res.best_fit_param_bst)
+    # plt.errorbar(abscissa,gv.mean(data2[0]),gv.sdev(data2[0]),capsize=2)
+    # # # plt.plot(abscissa,gv.mean(data),gv.sdev(data))
 
+    # plt.plot(abscissa, gv.mean(res.best_fit_param['A0']) * np.exp(-abscissa * gv.mean(res.best_fit_param["E0"])))
+    # # plt.yscale("log")
+    # plt.show()
     # # print dict res:
     # for key, value in res.items():
     #     print(f"{key}:{value}")
