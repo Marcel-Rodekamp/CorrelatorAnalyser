@@ -34,12 +34,12 @@ class FitResult:
     def __post_init__(self):
         if self.Nbst is None:
             return
-        self.chi2_bst = np.zeros(Nbst)
+        self.chi2_bst = np.zeros(self.Nbst)
         self.best_fit_param_bst = {}
-        self.aug_chi2_bst = np.zeros(Nbst)
-        self.Q_value_bst = np.zeros(Nbst)
-        self.AIC_bst = np.zeros(Nbst)
-        self.aug_AIC_bst = np.zeros(Nbst)
+        self.aug_chi2_bst = np.zeros(self.Nbst)
+        self.Q_value_bst = np.zeros(self.Nbst)
+        self.AIC_bst = np.zeros(self.Nbst)
+        self.aug_AIC_bst = np.zeros(self.Nbst)
 
     def calc_AIC(self, nlf: lsqfit.nonlinear_fit, augmented: bool = False) -> float:
         if augmented:
@@ -878,6 +878,11 @@ if __name__ == "__main__":
     # # plt.yscale("log")
     # plt.show()
     # # print dict res:
+    print(
+        res.best_fit_param_bst["E0"],
+        gv.mean(res.best_fit_param_bst["E0"]),
+        gv.sdev(res.best_fit_param["E0"]),
+    )
     # for key, value in res.items():
     #     print(f"{key}:{value}")
     # # plt.show()
