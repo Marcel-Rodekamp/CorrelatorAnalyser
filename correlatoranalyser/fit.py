@@ -34,12 +34,12 @@ class FitResult:
     def __post_init__(self):
         if self.Nbst is None:
             return
-        self.chi2_bst = np.zeros(Nbst)
+        self.chi2_bst = np.zeros(self.Nbst)
         self.best_fit_param_bst = {}
-        self.aug_chi2_bst = np.zeros(Nbst)
-        self.Q_value_bst = np.zeros(Nbst)
-        self.AIC_bst = np.zeros(Nbst)
-        self.aug_AIC_bst = np.zeros(Nbst)
+        self.aug_chi2_bst = np.zeros(self.Nbst)
+        self.Q_value_bst = np.zeros(self.Nbst)
+        self.AIC_bst = np.zeros(self.Nbst)
+        self.aug_AIC_bst = np.zeros(self.Nbst)
 
     def calc_AIC(self, nlf: lsqfit.nonlinear_fit, augmented: bool = False) -> float:
         if augmented:
@@ -97,7 +97,7 @@ class FitResult:
                 else:
                     if nbst == 0:
                         self.best_fit_param_bst[key] = np.empty(self.Nbst, dtype=object)
-                    self.best_fit_param_bst[key][nbst] = np.exp(nlf.p[key])
+                    self.best_fit_param_bst[key][nbst] = nlf.p[key]
             self.chi2_bst[nbst] = self.calc_aug_chi2(nlf)
             self.aug_chi2_bst[nbst] = nlf.chi2
             self.Q_value_bst[nbst] = nlf.Q
@@ -113,7 +113,7 @@ class FitResult:
                     key_red = key[4:-1]  # delete 'log(X)' from X
                     self.best_fit_param[key_red] = np.exp(nlf.p[key])
                 else:
-                    self.best_fit_param[key] = np.exp(nlf.p[key])
+                    self.best_fit_param[key] = nlf.p[key]
             self.chi2 = self.calc_aug_chi2(nlf)
             self.aug_chi2 = nlf.chi2
             self.Q_value = nlf.Q
@@ -851,8 +851,8 @@ if __name__ == "__main__":
     # bootrtrap and cental value fit:
     res = fit(
         abscissa=abscissa,
-        # ordinate_est=gv.mean(data),
-        # odinate_var=gv.var(data),
+        ordinate_est=gv.mean(data),
+        ordinate_var=gv.var(data),
         bootstrap_ordinate_est=data_bst,
         bootstrap_ordinate_cov=np.cov(data_bst, rowvar=False),
         # prior = {
@@ -881,3 +881,5 @@ if __name__ == "__main__":
     # for key, value in res.items():
     #     print(f"{key}:{value}")
     # # plt.show()
+
+print(res.best_fit_param, res.best_fit_param_bst, res.AIC_bst)
