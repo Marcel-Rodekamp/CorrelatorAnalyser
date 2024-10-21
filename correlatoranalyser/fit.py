@@ -42,6 +42,21 @@ class FitResult:
         self.aug_AIC_bst = np.zeros(self.Nbst)
 
     def calc_AIC(self, nlf: lsqfit.nonlinear_fit, augmented: bool = False) -> float:
+        r"""Compute the Akaike information criterion for a fit result
+        based on the chi^2 obtained from lsqfit.
+        The form can be found in
+            https://arxiv.org/abs/2305.19417
+            https://arxiv.org/abs/2208.14983
+            https://arxiv.org/abs/2008.01069
+        equation 3 in the first:
+            AIC^{perf} = -2ln L^* + 2k - 2d_K
+        Here we compare
+            1. -2*ln(L^*) = chi^2
+            2. k = number of parameters
+            3. d_K = number of points
+
+        If priored fit, this includes the prior. For a prior less version see AICp
+        """
         if augmented:
             return nlf.chi2 + 2 * len(nlf.p) - 2 * len(nlf.x)
         correction: float = 0.0
@@ -882,4 +897,4 @@ if __name__ == "__main__":
     #     print(f"{key}:{value}")
     # # plt.show()
 
-print(res.best_fit_param, res.best_fit_param_bst, res.AIC_bst)
+# print(res.best_fit_param,res.best_fit_param_bst,res.AIC_bst)
