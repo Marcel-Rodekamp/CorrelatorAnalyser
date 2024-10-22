@@ -17,7 +17,7 @@ from abc import abstractmethod
 # in lsqfit.
 import gvar as gv
 
-from .helper import meff
+from helper import meff
 
 #########################################################################################
 #########################################################################################
