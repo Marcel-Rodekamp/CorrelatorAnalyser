@@ -16,6 +16,7 @@ class FitResult:
     te: int  # endpoint abscissa
     num_dof: int = None
     best_fit_param: gv.BufferDict | None = None
+    used_prior: gv.BufferDict | None = None
     chi2: float | None = None
     aug_chi2: float | None = None
     Q_value: float | None = None
@@ -24,6 +25,7 @@ class FitResult:
     # bootstrap fit results
     Nbst: int | None = None
     best_fit_param_bst: gv.BufferDict | None = None
+    used_prior_bst: gv.BufferDict | None = None
     chi2_bst: np.ndarray | None = None
     aug_chi2_bst: np.ndarray | None = None
 
@@ -40,6 +42,7 @@ class FitResult:
         self.Q_value_bst = np.zeros(self.Nbst)
         self.AIC_bst = np.zeros(self.Nbst)
         self.aug_AIC_bst = np.zeros(self.Nbst)
+        self.used_prior_bst = np.zeros(self.Nbst, dtype=object)
 
     def calc_AIC(self, nlf: lsqfit.nonlinear_fit, augmented: bool = False) -> float:
         r"""Compute the Akaike information criterion for a fit result
@@ -119,6 +122,8 @@ class FitResult:
             self.AIC_bst[nbst] = self.calc_AIC(nlf)
             self.aug_AIC_bst[nbst] = self.calc_AIC(nlf, augmented=True)
             self.num_dof = nlf.dof
+
+            self.used_prior_bst[nbst] = nlf.prior
         else:
             self.num_dof = nlf.dof
             # self.best_fit_param = nlf.p
@@ -134,7 +139,31 @@ class FitResult:
             self.Q_value = nlf.Q
             self.AIC = self.calc_AIC(nlf)
             self.aug_AIC = self.calc_AIC(nlf, augmented=True)
+
+            self.used_prior = nlf.prior
         return
+
+    def __repr__(self):
+        r"""
+            Create a representation of the central value fit results
+        """
+        rep = f"FitResult[ ({self.ts},{self.te}), resample:{self.Nbst is not None} ]:\n"
+        rep+= f"  𝜒²/dof [dof] = {self.chi2/self.num_dof:.3g} [{self.num_dof}]\n"
+        rep+= f"  AIC = {self.aug_AIC:.3g} \n"
+        rep+= f"  Best Central Value Fit:\n"
+        
+        for key,param in self.best_fit_param.items():
+
+            if self.Nbst is not None:
+                p = gv.gvar(
+                    gv.mean(param), np.std( [ p_.mean for p_ in self.best_fit_param_bst[key] ] )
+                )
+            else:
+                p = param
+
+            rep+= f"    - {key}: {p}  [{self.used_prior[key]}]\n"
+
+        return rep
 
     # node: path in h5 file (specifies the ) h5_handel: h5File object
     def serialize(self, h5_handle: h5py.File, node: str) -> None:
@@ -436,11 +465,11 @@ def fit(
             raise RuntimeError(f"{msg}\n{e}")
 
     if not bootstrap_fit:
-        with h5py.File("../Report/FitResult.h5", "w") as h5f:
-            res.serialize(h5_handle=h5f, node=f"timeslice_{abscissa[0]}_{abscissa[-1]}")
-            FitResult.deserialize(
-                h5_handle=h5f, node=f"timeslice_{abscissa[0]}_{abscissa[-1]}"
-            )
+        #with h5py.File("../Report/FitResult.h5", "w") as h5f:
+        #    res.serialize(h5_handle=h5f, node=f"timeslice_{abscissa[0]}_{abscissa[-1]}")
+        #    FitResult.deserialize(
+        #        h5_handle=h5f, node=f"timeslice_{abscissa[0]}_{abscissa[-1]}"
+        #    )
         return res  # return fit results
 
     # prepare data for a bootstrap fit
@@ -484,16 +513,15 @@ def fit(
             msg += f"- nbst: {nbst}\n"
             raise RuntimeError(f"{msg}\n{e}")
 
-    with h5py.File("../Report/FitResult.h5", "w") as h5f:
-        res.serialize(h5_handle=h5f, node=f"timeslice_{abscissa[0]}_{abscissa[-1]}")
-        FitResult.deserialize(
-            h5_handle=h5f, node=f"timeslice_{abscissa[0]}_{abscissa[-1]}"
-        )
+    #with h5py.File("../Report/FitResult.h5", "w") as h5f:
+    #    res.serialize(h5_handle=h5f, node=f"timeslice_{abscissa[0]}_{abscissa[-1]}")
+    #    FitResult.deserialize(
+    #        h5_handle=h5f, node=f"timeslice_{abscissa[0]}_{abscissa[-1]}"
+    #    )
     return res
 
 
 def test_defensive(Nt: int = 32, Nbst: int = 100):
-
     abscissa: np.ndarray = np.zeros(Nt)
     ordinate_est: np.ndarray[gv.GVar] = np.zeros(Nt, dtype=gv.GVar)
     ordinate_var: np.ndarray[gv.GVar] = np.zeros(Nt, dtype=gv.GVar)
