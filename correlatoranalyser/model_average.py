@@ -1,13 +1,13 @@
 from dataclasses import dataclass, field
 from pathlib import Path
 from typing import Self, List, Dict
-from fit import FitResult
+from .fit import FitResult
 import numpy as np
 import gvar as gv
 
 
 @dataclass
-class Utility:
+class FitState:
     fit_results: List[FitResult] = field(
         default_factory=lambda: []
     )  # list of fit results
@@ -23,13 +23,6 @@ class Utility:
             # print(new_keys)
             self.keys_all += [key for key in new_keys if key not in self.keys_all]
             self.fit_results.sort(key=lambda x: x.AIC)  # sort by AIC
-        except:
-            pass
-        try:
-            new_keys = list(new_fit.best_fit_param_bst.keys())
-            # print(new_keys)
-            self.keys_all += [key for key in new_keys if key not in self.keys_all]
-            self.fit_results.sort(key=lambda x: x.AIC_bst)  # sort by AIC
         except:
             pass
 
