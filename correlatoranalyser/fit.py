@@ -7,6 +7,8 @@ import pytest
 import h5py
 from dataclasses import dataclass, fields
 
+# An extension to pickle. We use this to pickle the fit functions and store it in an h5 file
+from dill import dumps, loads
 
 @dataclass
 class FitResult:
@@ -32,6 +34,9 @@ class FitResult:
     Q_value_bst: np.ndarray | None = None
     AIC_bst: np.ndarray | None = None
     aug_AIC_bst: np.ndarray | None = None
+
+    # Functional form of the fit model
+    fcn: callable = None
 
     def __post_init__(self):
         if self.Nbst is None:
@@ -99,9 +104,49 @@ class FitResult:
 
     """save the interesting results from a lsqfit, if nbst is given then save in corresponding row nbst of the bootstrap parameters"""
 
+    def eval(self, abscissa: np.ndarray | None= None) -> dict:
+        r"""
+
+        """
+        
+        if abscissa is None:
+            # if abscissa not provided we use a linspace with 5 times the density of the original data points.
+            abscissa = np.linspace( self.ts, self.te, 5*(self.te-self.ts) )
+        
+        # out dictionary which will contain 3 keys:
+        # "est": central value fit result
+        # "err": 1 std confidence band either through bootstrap or gaussian error propagation
+        # "bst": fit result per bootstrap 
+        # each contains a numpy array of floats of shape ([Nbst], len(abscissa),)
+        out = {}
+
+        gvar_eval = self.fcn( abscissa, self.best_fit_param )
+
+        out["est"] = gv.mean(gvar_eval)
+
+        if self.Nbst is not None:
+            out["bst"] = np.zeros( (self.Nbst, *abscissa.shape ) )
+
+            param_keys = self.best_fit_param.keys()
+
+            for nbst in range(self.Nbst):
+                out["bst"][nbst] = gv.mean(
+                    self.fcn( abscissa, { key: self.best_fit_param_bst[key][nbst] for key in param_keys} )
+                )
+        
+            out['err'] = np.std( out["bst"], axis = 0 )
+        else:
+            out['err'] = gv.sdev( gvar_eval )
+
+        return out
+
     def import_from_nonlinear_fit(
         self, nlf: lsqfit.nonlinear_fit, nbst: None | int = None
     ) -> None:
+
+        if self.fcn is None:
+            self.fcn = nlf.fcn
+
         if nbst is not None:
             # self.best_fit_param_bst[nbst] = nlf.p
             for key in list(nlf.p.keys()):  # don't want to store the log value
@@ -122,7 +167,7 @@ class FitResult:
             self.AIC_bst[nbst] = self.calc_AIC(nlf)
             self.aug_AIC_bst[nbst] = self.calc_AIC(nlf, augmented=True)
             self.num_dof = nlf.dof
-
+            
             self.used_prior_bst[nbst] = nlf.prior
         else:
             self.num_dof = nlf.dof
@@ -186,6 +231,9 @@ class FitResult:
                     )
             elif field_value is None:
                 pass
+            elif isinstance(field_value, callable):
+                h5_handle.create_dataset(f"{node}/{field.name}", data = dumps(field_value,0) )
+
             # elif (
             #     field.name == "best_fit_param_bst"
             # ):  # type(field_value) == dict: #for best_fit_param_bst, when not None
@@ -214,6 +262,11 @@ class FitResult:
             res = FitResult(te=te, ts=ts)
         # read in the data:
         for key in h5_handle[node]:
+            # The callable function needs to be decoded (unpickled)
+            if key == "fcn":
+                setattr(res, key, loads(h5_handle[f"{node}/{key}"][()]))
+                continue
+
             if isinstance(h5_handle[f"{node}/{key}"], h5py.Dataset):
                 setattr(res, key, h5_handle[f"{node}/{key}"][()])
             elif isinstance(
