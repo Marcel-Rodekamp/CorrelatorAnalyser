@@ -38,6 +38,9 @@ class FitResult:
     # Functional form of the fit model
     fcn: callable = None
 
+
+    _result_params_dict: dict | None = None
+
     def __post_init__(self):
         if self.Nbst is None:
             return
@@ -48,6 +51,7 @@ class FitResult:
         self.AIC_bst = np.zeros(self.Nbst)
         self.aug_AIC_bst = np.zeros(self.Nbst)
         self.used_prior_bst = np.zeros(self.Nbst, dtype=object)
+        
 
     def calc_AIC(self, nlf: lsqfit.nonlinear_fit, augmented: bool = False) -> float:
         r"""Compute the Akaike information criterion for a fit result
@@ -92,17 +96,37 @@ class FitResult:
             )
         return nlf.chi2 - correction
 
-    """function evaluates the fit model for a given abscissa and fit parameters, if no  fit parameters are given the best fit parameters from the fit are used, 
-    returns an np.ndarray with the corresponding ordinate values"""
-    # def eval_model(self,nlf: lsqfit.nonlinear_fit, abscissa: np.ndarray, params_dict: None | dict = None)-> np.ndarray:
-    #     if params_dict is None:
-    #         params_dict = self.p
-    #     ordinate = nlf.fcn(abscissa,params_dict)
-    #         # ordinate = np.print(nlf.fcn(10,nlf.p))
-    #     print(abscissa,ordinate)
-    #     return ordinate
+    def has_bootstraps(self):
+        return self.Nbst is not None
 
-    """save the interesting results from a lsqfit, if nbst is given then save in corresponding row nbst of the bootstrap parameters"""
+    def result_params(self, key: str|None = None) -> dict:
+        r"""
+            @param key: either "est", "err" or "bst"
+        """
+        # Log the dictionary so that we don't need to recalculate the std in case of a resampled fit
+        if self._result_params_dict is not None:
+            if key is None:
+                return self._result_params_dict
+            else:
+                return self._result_params_dict[key]
+        else:
+            self._result_params_dict = {}
+
+        self._result_params_dict["est"] = gv.mean( self.best_fit_param )
+
+        if self.has_bootstraps():
+            self._result_params_dict["bst"] = self.best_fit_param_bst
+            
+            self._result_params_dict["err"] = {
+                key: np.std(gv.mean(self.best_fit_param_bst[key]), axis = 0) for key in self.best_fit_param.keys()  
+            }
+        else:
+            self._result_params_dict["err"] = gv.mean( self.best_fit_param )
+
+        if key is None:
+            return self._result_params_dict
+        else:
+            return self._result_params_dict[key]
 
     def eval(self, abscissa: np.ndarray | None= None) -> dict:
         r"""
@@ -143,7 +167,9 @@ class FitResult:
     def import_from_nonlinear_fit(
         self, nlf: lsqfit.nonlinear_fit, nbst: None | int = None
     ) -> None:
-
+        """
+            save the interesting results from a lsqfit, if nbst is given then save in corresponding row nbst of the bootstrap parameters
+        """
         if self.fcn is None:
             self.fcn = nlf.fcn
 
@@ -294,7 +320,14 @@ class FitResult:
                 #         # print(getattr(res,key),int(nbst))
         return res
 
-
+    ## At each time the state defines an iterator over the tracked fits
+    ## We simply expose the list here
+    ## TODO: Is there a more elegant way?
+    def __iter__(self):
+        return self.fit_results.__iter__()
+    
+    def __next__(self):
+        return self.fit_results.__next__()
 def fit(
     *,
     abscissa: np.ndarray,
