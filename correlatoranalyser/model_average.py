@@ -131,15 +131,24 @@ class FitState:
                     )
                 avg_single_key(key=key)
 
-            return { key: self.param_avg[key] for key in keys }
+            out = {}
+            for res_type_key in ["est","err","bst"]:
+                if res_type_key not in self.param_avg.keys(): continue
+                out[res_type_key] = {key:self.param_avg[res_type_key][key] for key in keys} 
+            return out
+
         elif isinstance(keys, str):
             if keys not in self.keys_all:
                 raise KeyError(
                     f'The given key "{keys}" is not a fit parameter, choose one parameter from {self.keys_all} for the model average.'
                 )
             avg_single_key(key=keys)
-
-            return { key: self.param_avg[key] }
+            
+            out = {}
+            for res_type_key in ["est","err","bst"]:
+                if res_type_key not in self.param_avg.keys(): continue
+                out[res_type_key] = self.param_avg[res_type_key][keys] 
+            return out
         else:
             for key in self.keys_all:
                 avg_single_key(key=key)
