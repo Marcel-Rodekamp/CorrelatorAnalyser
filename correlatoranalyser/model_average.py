@@ -104,6 +104,14 @@ class FitState:
                 avg_single_key(key=key)
         return
 
-    def __get_item(index: int) -> FitResult:
+
+    def __getitem__(self, index: int) -> FitResult:
         """method that gets a fit result based on the index in the fit_result list, list is sorted by AIC"""
-        return
+        return self.fit_results[index]
+
+    def __len__(self):
+        """
+            Returns the number of fits which are being tracked.
+        """
+
+        return len(self.fit_results)
