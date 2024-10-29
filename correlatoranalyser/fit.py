@@ -6,9 +6,11 @@ import warnings
 import pytest
 import h5py
 from dataclasses import dataclass, fields
+from typing import Callable
 
 # An extension to pickle. We use this to pickle the fit functions and store it in an h5 file
 from dill import dumps, loads
+
 
 @dataclass
 class FitResult:
@@ -17,8 +19,8 @@ class FitResult:
     ts: int  # startpoint abscissa
     te: int  # endpoint abscissa
     num_dof: int = None
-    best_fit_param: gv.BufferDict | None = None
-    used_prior: gv.BufferDict | None = None
+    best_fit_param: dict | None = None
+    used_prior: dict | None = None
     chi2: float | None = None
     aug_chi2: float | None = None
     Q_value: float | None = None
@@ -26,8 +28,8 @@ class FitResult:
     aug_AIC: float | None = None
     # bootstrap fit results
     Nbst: int | None = None
-    best_fit_param_bst: gv.BufferDict | None = None
-    used_prior_bst: gv.BufferDict | None = None
+    best_fit_param_bst: dict | None = None
+    used_prior_bst: dict | None = None
     chi2_bst: np.ndarray | None = None
     aug_chi2_bst: np.ndarray | None = None
 
@@ -37,7 +39,6 @@ class FitResult:
 
     # Functional form of the fit model
     fcn: callable = None
-
 
     _result_params_dict: dict | None = None
 
@@ -50,8 +51,7 @@ class FitResult:
         self.Q_value_bst = np.zeros(self.Nbst)
         self.AIC_bst = np.zeros(self.Nbst)
         self.aug_AIC_bst = np.zeros(self.Nbst)
-        self.used_prior_bst = np.zeros(self.Nbst, dtype=object)
-        
+        self.used_prior_bst = {}  # np.zeros(self.Nbst, dtype=object)
 
     def calc_AIC(self, nlf: lsqfit.nonlinear_fit, augmented: bool = False) -> float:
         r"""Compute the Akaike information criterion for a fit result
@@ -99,9 +99,9 @@ class FitResult:
     def has_bootstraps(self):
         return self.Nbst is not None
 
-    def result_params(self, key: str|None = None) -> dict:
+    def result_params(self, key: str | None = None) -> dict:
         r"""
-            @param key: either "est", "err" or "bst"
+        @param key: either "est", "err" or "bst"
         """
         # Log the dictionary so that we don't need to recalculate the std in case of a resampled fit
         if self._result_params_dict is not None:
@@ -112,55 +112,57 @@ class FitResult:
         else:
             self._result_params_dict = {}
 
-        self._result_params_dict["est"] = gv.mean( self.best_fit_param )
+        self._result_params_dict["est"] = gv.mean(self.best_fit_param)
 
         if self.has_bootstraps():
             self._result_params_dict["bst"] = self.best_fit_param_bst
-            
+
             self._result_params_dict["err"] = {
-                key: np.std(gv.mean(self.best_fit_param_bst[key]), axis = 0) for key in self.best_fit_param.keys()  
+                key: np.std(gv.mean(self.best_fit_param_bst[key]), axis=0)
+                for key in self.best_fit_param.keys()
             }
         else:
-            self._result_params_dict["err"] = gv.mean( self.best_fit_param )
+            self._result_params_dict["err"] = gv.mean(self.best_fit_param)
 
         if key is None:
             return self._result_params_dict
         else:
             return self._result_params_dict[key]
 
-    def eval(self, abscissa: np.ndarray | None= None) -> dict:
-        r"""
+    def eval(self, abscissa: np.ndarray | None = None) -> dict:
+        r""" """
 
-        """
-        
         if abscissa is None:
             # if abscissa not provided we use a linspace with 5 times the density of the original data points.
-            abscissa = np.linspace( self.ts, self.te, 5*(self.te-self.ts) )
-        
+            abscissa = np.linspace(self.ts, self.te, 5 * (self.te - self.ts))
+
         # out dictionary which will contain 3 keys:
         # "est": central value fit result
         # "err": 1 std confidence band either through bootstrap or gaussian error propagation
-        # "bst": fit result per bootstrap 
+        # "bst": fit result per bootstrap
         # each contains a numpy array of floats of shape ([Nbst], len(abscissa),)
         out = {}
 
-        gvar_eval = self.fcn( abscissa, self.best_fit_param )
+        gvar_eval = self.fcn(abscissa, self.best_fit_param)
 
         out["est"] = gv.mean(gvar_eval)
 
         if self.Nbst is not None:
-            out["bst"] = np.zeros( (self.Nbst, *abscissa.shape ) )
+            out["bst"] = np.zeros((self.Nbst, *abscissa.shape))
 
             param_keys = self.best_fit_param.keys()
 
             for nbst in range(self.Nbst):
                 out["bst"][nbst] = gv.mean(
-                    self.fcn( abscissa, { key: self.best_fit_param_bst[key][nbst] for key in param_keys} )
+                    self.fcn(
+                        abscissa,
+                        {key: self.best_fit_param_bst[key][nbst] for key in param_keys},
+                    )
                 )
-        
-            out['err'] = np.std( out["bst"], axis = 0 )
+
+            out["err"] = np.std(out["bst"], axis=0)
         else:
-            out['err'] = gv.sdev( gvar_eval )
+            out["err"] = gv.sdev(gvar_eval)
 
         return out
 
@@ -168,7 +170,7 @@ class FitResult:
         self, nlf: lsqfit.nonlinear_fit, nbst: None | int = None
     ) -> None:
         """
-            save the interesting results from a lsqfit, if nbst is given then save in corresponding row nbst of the bootstrap parameters
+        save the interesting results from a lsqfit, if nbst is given then save in corresponding row nbst of the bootstrap parameters
         """
         if self.fcn is None:
             self.fcn = nlf.fcn
@@ -186,53 +188,58 @@ class FitResult:
                 else:
                     if nbst == 0:
                         self.best_fit_param_bst[key] = np.empty(self.Nbst, dtype=object)
+                        self.used_prior_bst[key] = np.empty(self.Nbst, dtype=object)
                     self.best_fit_param_bst[key][nbst] = nlf.p[key]
+                    self.used_prior_bst[key][nbst] = nlf.prior[key]
             self.chi2_bst[nbst] = self.calc_aug_chi2(nlf)
             self.aug_chi2_bst[nbst] = nlf.chi2
             self.Q_value_bst[nbst] = nlf.Q
             self.AIC_bst[nbst] = self.calc_AIC(nlf)
             self.aug_AIC_bst[nbst] = self.calc_AIC(nlf, augmented=True)
             self.num_dof = nlf.dof
-            
-            self.used_prior_bst[nbst] = nlf.prior
+
+            # self.used_prior_bst[nbst] = nlf.prior
         else:
             self.num_dof = nlf.dof
             # self.best_fit_param = nlf.p
             self.best_fit_param = {}
+            self.used_prior = {}
             for key in list(nlf.p.keys()):  # don't want to store the log value
                 if "log" in key:
                     key_red = key[4:-1]  # delete 'log(X)' from X
                     self.best_fit_param[key_red] = np.exp(nlf.p[key])
                 else:
                     self.best_fit_param[key] = nlf.p[key]
+                    self.used_prior[key] = nlf.prior[key]
             self.chi2 = self.calc_aug_chi2(nlf)
             self.aug_chi2 = nlf.chi2
             self.Q_value = nlf.Q
             self.AIC = self.calc_AIC(nlf)
             self.aug_AIC = self.calc_AIC(nlf, augmented=True)
 
-            self.used_prior = nlf.prior
+            # self.used_prior = nlf.prior
         return
 
     def __repr__(self):
         r"""
-            Create a representation of the central value fit results
+        Create a representation of the central value fit results
         """
         rep = f"FitResult[ ({self.ts},{self.te}), resample:{self.Nbst is not None} ]:\n"
-        rep+= f"  𝜒²/dof [dof] = {self.chi2/self.num_dof:.3g} [{self.num_dof}]\n"
-        rep+= f"  AIC = {self.aug_AIC:.3g} \n"
-        rep+= f"  Best Central Value Fit:\n"
-        
-        for key,param in self.best_fit_param.items():
+        rep += f"  𝜒²/dof [dof] = {self.chi2/self.num_dof:.3g} [{self.num_dof}]\n"
+        rep += f"  AIC = {self.aug_AIC:.3g} \n"
+        rep += f"  Best Central Value Fit:\n"
+
+        for key, param in self.best_fit_param.items():
 
             if self.Nbst is not None:
                 p = gv.gvar(
-                    gv.mean(param), np.std( [ p_.mean for p_ in self.best_fit_param_bst[key] ] )
+                    gv.mean(param),
+                    np.std([p_.mean for p_ in self.best_fit_param_bst[key]]),
                 )
             else:
                 p = param
 
-            rep+= f"    - {key}: {p}  [{self.used_prior[key]}]\n"
+            rep += f"    - {key}: {p}  [{self.used_prior[key]}]\n"
 
         return rep
 
@@ -245,7 +252,9 @@ class FitResult:
         # for key, value in self.best_fit_param.items(): print(key,value)
         for field in fields(self):
             field_value = getattr(self, field.name)
-            # print(f"{field.name} with value {field_value} field.type:{field.type} type(field_value): {type(field_value)} is None: {field_value is None } is dict: {type(field_value)==gv.BufferDict}")
+            print(
+                f"{field.name} type(field_value): {type(field_value)} is None: {field_value is None } with value {field_value}"
+            )
             if type(field_value) == dict:  # for best_param and best_param_bst
                 for key, value in field_value.items():
                     # split gvar data in estimate(est) and error (err) for saving in h5 file
@@ -257,8 +266,25 @@ class FitResult:
                     )
             elif field_value is None:
                 pass
-            elif isinstance(field_value, callable):
-                h5_handle.create_dataset(f"{node}/{field.name}", data = dumps(field_value,0) )
+
+            # elif type(field_value) == gv.BufferDict: #for "used_prior"
+            #     print(type(self.used_prior["E0"]),self.used_prior["E0"])
+            #     for key,value in field_value.items():
+            #         h5_handle.create_dataset(
+            #             f"{node}/{field.name}/{key}/est", data = gv.mean(value)
+            #         )
+            #         h5_handle.create_dataset(
+            #             f"{node}/{field.name}/{key}/err", data = gv.sdev(value)
+            #         )
+
+            # print("used prior passed")
+            # pass
+            # elif field.name == "fcn":
+            #     print("model passed")
+            elif isinstance(field_value, Callable):
+                h5_handle.create_dataset(
+                    f"{node}/{field.name}", data=dumps(field_value, 0)
+                )
 
             # elif (
             #     field.name == "best_fit_param_bst"
@@ -325,9 +351,11 @@ class FitResult:
     ## TODO: Is there a more elegant way?
     def __iter__(self):
         return self.fit_results.__iter__()
-    
+
     def __next__(self):
         return self.fit_results.__next__()
+
+
 def fit(
     *,
     abscissa: np.ndarray,
@@ -551,7 +579,7 @@ def fit(
             raise RuntimeError(f"{msg}\n{e}")
 
     if not bootstrap_fit:
-        #with h5py.File("../Report/FitResult.h5", "w") as h5f:
+        # with h5py.File("../Report/FitResult.h5", "w") as h5f:
         #    res.serialize(h5_handle=h5f, node=f"timeslice_{abscissa[0]}_{abscissa[-1]}")
         #    FitResult.deserialize(
         #        h5_handle=h5f, node=f"timeslice_{abscissa[0]}_{abscissa[-1]}"
@@ -599,7 +627,7 @@ def fit(
             msg += f"- nbst: {nbst}\n"
             raise RuntimeError(f"{msg}\n{e}")
 
-    #with h5py.File("../Report/FitResult.h5", "w") as h5f:
+    # with h5py.File("../Report/FitResult.h5", "w") as h5f:
     #    res.serialize(h5_handle=h5f, node=f"timeslice_{abscissa[0]}_{abscissa[-1]}")
     #    FitResult.deserialize(
     #        h5_handle=h5f, node=f"timeslice_{abscissa[0]}_{abscissa[-1]}"
