@@ -6,6 +6,8 @@ import lsqfit
 
 import warnings
 
+from collections.abc import Callable
+
 from .fitResult import FitResult
 
 def fit(
@@ -25,7 +27,7 @@ def fit(
     resample_fit_resample_prior: bool = True,
     resample_type: str | None = None,
     # args for lsqfit:
-    model: callable | None = None,
+    model: Callable | None = None,
     prior: dict | None = None,
     p0: dict | None = None,
     svdcut: float | None = None,
