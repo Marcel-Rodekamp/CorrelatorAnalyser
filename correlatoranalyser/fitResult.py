@@ -146,13 +146,13 @@ class FitResult:
                 +f"but got {key}"        
             )
 
-        result_params_dict["est"] = gv.mean( self.best_fit_param )
+        result_params_dict = { "est": gv.mean( self.best_fit_param ) }
 
         if self.has_resamples():
             result_params_dict["res"] = self.best_fit_param_res
             
             # Calculate errors differently for bootstrap or jackknifes
-            if self.resample_type == 'res':
+            if self.resample_type == 'bst':
                 result_params_dict["err"] = {
                     key: np.std(
                             gv.mean(self.best_fit_param_res[key]), 
@@ -286,7 +286,7 @@ class FitResult:
         
         # Fit parameters
         fit_params = self.result_params()
-        for key in self.fit_params['est'].keys():
+        for key in fit_params['est'].keys():
             p = gv.gvar(fit_params['est'], fit_params['err'])
             rep+= f"    - {key}: {p}  [{self.prior[key]}]\n"
 
@@ -534,8 +534,8 @@ class FitResult:
                 else:
 
                     # check if the resample array exists. If not set it
-                    if key_red not in self.best_fit_param_res.keys():
-                        self.best_fit_param_res[key_red] = np.empty(self.Nres, dtype=object)
+                    if key not in self.best_fit_param_res.keys():
+                        self.best_fit_param_res[key] = np.empty(self.Nres, dtype=object)
 
                     # extract the parameter
                     self.best_fit_param_res[key][nres] = nlf.p[key]

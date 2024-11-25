@@ -29,9 +29,9 @@ class FitState:
         except:
             pass
         try:
-            new_keys = list(new_fit.best_fit_param_bst.keys())
+            new_keys = list(new_fit.best_fit_param_res.keys())
             self.keys_all += [key for key in new_keys if key not in self.keys_all]
-            self.fit_results.sort(key=lambda x: x.AIC_bst)  # sort by AIC
+            self.fit_results.sort(key=lambda x: x.AIC_res)  # sort by AIC
         except:
             pass
 
@@ -46,12 +46,12 @@ class FitState:
             param_err = np.empty(N)
             AIC_est = np.empty(N)
 
-            bootstrap_available = self.fit_results[0].has_bootstraps()
+            resamples_available = self.fit_results[0].has_resamples()
 
-            if bootstrap_available:
-                Nbst = self.fit_results[0].Nbst
-                AIC_bst = np.empty((Nbst, N))
-                param_bst = np.empty((Nbst, N))
+            if resamples_available:
+                Nres = self.fit_results[0].Nres
+                AIC_res = np.empty((Nres, N))
+                param_res = np.empty((Nres, N))
             
             # if a key is not available in a fit, we need to remove it from the average
             not_available_fits = []
@@ -68,18 +68,18 @@ class FitState:
                 param_err[fitID] = params["err"][key]
                 AIC_est[fitID]   = fit.AIC
 
-                if bootstrap_available:
-                    param_bst[:,fitID] = gv.mean(params["bst"][key])
-                    AIC_bst[:,fitID]   = fit.AIC_bst
+                if resamples_available:
+                    param_res[:,fitID] = gv.mean(params["res"][key])
+                    AIC_res[:,fitID]   = fit.AIC_res
             
             # Delete the entries for which there is no parameter
             param_est = np.delete(param_est, not_available_fits)
             param_err = np.delete(param_err, not_available_fits)
             AIC_est = np.delete(AIC_est, not_available_fits)
 
-            if bootstrap_available:
-                param_bst = np.delete(param_bst, not_available_fits, axis = 1)
-                AIC_bst = np.delete(AIC_bst, not_available_fits, axis = 1)
+            if resamples_available:
+                param_res = np.delete(param_res, not_available_fits, axis = 1)
+                AIC_res = np.delete(AIC_res, not_available_fits, axis = 1)
 
             if not self.param_avg:
                 self.param_avg["est"] = {}
@@ -107,30 +107,33 @@ class FitState:
                 self.param_avg["err"][key] = modelAvg_err
 
             # model averaging for bootstrap fit results
-            if self.fit_results[0].has_bootstraps():
+            if self.fit_results[0].has_resamples():
                 if not self.param_avg:
-                    self.param_avg["bst"] = {}
-                elif "bst" not in self.param_avg.keys():
-                    self.param_avg["bst"] = {}
+                    self.param_avg["res"] = {}
+                elif "res" not in self.param_avg.keys():
+                    self.param_avg["res"] = {}
                 
                 # Steps are similar as above, for the central value results, but extended to every sample result:
                 # 1) calculate weights
-                weights_bst = np.exp(-0.5 * (AIC_bst - np.min(AIC_bst,axis=1)[:,None]))
-                weights_bst /= np.sum(weights_bst, axis = 1)[:,None]
+                weights_res = np.exp(-0.5 * (AIC_res - np.min(AIC_res,axis=1)[:,None]))
+                weights_res /= np.sum(weights_res, axis = 1)[:,None]
                 # 2) model average
-                modelAvg_bst = np.average(param_bst, weights=weights_bst, axis=1)
+                modelAvg_res = np.average(param_res, weights=weights_res, axis=1)
                 # 3) calculate the uncertainty. This is changed as we don't rely on error propagation but instead 
                 #    compute the combined bootstrap + model average error.
                 #    This is in principle a very conservative estimate as it captures uncertainties on the model.
                 # This potentially overwrites the error above. This IS intended as by default the bootstrap uncertainty is 
                 # more reliable than the simple error propagation!
-                self.param_avg["err"][key] = np.std(modelAvg_bst,axis=0)
+                self.fit_results[0].resample_type == 'bst':
+                    self.param_avg["err"][key] = np.std(modelAvg_res,axis=0)
+                self.fit_results[0].resample_type == 'jkn':
+                    self.param_avg["err"][key] = ((Nres-1)/Nres) * np.std(modelAvg_res,axis=0)
                 # if no central value fit is done we simply compute the mean over bootstrap fits
                 # these two values are equal provided, same fitting strategy!
                 if self.fit_results[0].AIC is None:  # check if central value fit
-                    self.param_avg["est"][key] = np.mean(modelAvg_bst, axis = 0)
+                    self.param_avg["est"][key] = np.mean(modelAvg_res, axis = 0)
                 # finally the bootstrap results will be stored too:
-                self.param_avg["bst"][key] = modelAvg_bst
+                self.param_avg["res"][key] = modelAvg_res
         # end def avg_single_key
 
         # go through all parameters and do model averaging for each of them:
@@ -143,7 +146,7 @@ class FitState:
                 avg_single_key(key=key)
 
             out = {}
-            for res_type_key in ["est","err","bst"]:
+            for res_type_key in ["est","err","res"]:
                 if res_type_key not in self.param_avg.keys(): continue
                 out[res_type_key] = {key:self.param_avg[res_type_key][key] for key in keys} 
             return out
@@ -157,7 +160,7 @@ class FitState:
             avg_single_key(key=keys)
             
             out = {}
-            for res_type_key in ["est","err","bst"]:
+            for res_type_key in ["est","err","res"]:
                 if res_type_key not in self.param_avg.keys(): continue
                 out[res_type_key] = self.param_avg[res_type_key][keys] 
             
