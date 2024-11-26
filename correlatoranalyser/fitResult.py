@@ -455,7 +455,7 @@ class FitResult:
         #       We may want to come up with a way to allow a more flexible way of calculating
         #       the AIC.
         #       For reference see issue #8
-        AIC: float = 2 * (Ndata - Nparam)
+        AIC: float = 2 * (Nparam - Ndata)
 
         if small_sample_correction:
             # This corrections is negligible if Ndata >> Nparam**2 and thus often very useful
