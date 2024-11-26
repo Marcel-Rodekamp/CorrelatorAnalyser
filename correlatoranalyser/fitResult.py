@@ -287,7 +287,7 @@ class FitResult:
         # Fit parameters
         fit_params = self.result_params()
         for key in fit_params['est'].keys():
-            p = gv.gvar(fit_params['est'], fit_params['err'])
+            p = gv.gvar(fit_params['est'][key], fit_params['err'][key])
             rep+= f"    - {key}: {p}  [{self.prior[key]}]\n"
 
         return rep
