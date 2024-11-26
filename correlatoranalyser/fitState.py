@@ -1,11 +1,16 @@
-from dataclasses import dataclass, field, fields
-from pathlib import Path
-from typing import Self, List, Dict
-from fit import FitResult
 import numpy as np
+
 import gvar as gv
+
 import h5py
 
+from dataclasses import dataclass, field, fields
+
+from pathlib import Path
+
+from typing import Self, List, Dict
+
+from .fitResult import FitResult
 
 @dataclass
 class FitState:
@@ -181,7 +186,7 @@ class FitState:
 
     # dumps all information of the FitState in a h5 File
     def serialize_all(
-        self, h5_file: h5py.File = h5py.File("../Report/FitState.h5", "w")
+        self, h5_file: h5py.File
     ) -> None:
         # print(getattr(self,fit_results) )
         if not self.fit_results:
