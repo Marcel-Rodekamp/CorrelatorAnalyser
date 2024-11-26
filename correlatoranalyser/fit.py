@@ -1,1047 +1,403 @@
 import numpy as np
+
 import gvar as gv
-import matplotlib.pyplot as plt
+
 import lsqfit
+
 import warnings
-import pytest
-import h5py
-from dataclasses import dataclass, fields
-from typing import Callable
 
-# An extension to pickle. We use this to pickle the fit functions and store it in an h5 file
-from dill import dumps, loads
+from collections.abc import Callable
 
-
-@dataclass
-class FitResult:
-    """ToDo"""
-
-    ts: int  # startpoint abscissa
-    te: int  # endpoint abscissa
-    num_dof: int = None
-    best_fit_param: dict | None = None
-    used_prior: dict | None = None
-    chi2: float | None = None
-    aug_chi2: float | None = None
-    Q_value: float | None = None
-    AIC: float | None = None
-    aug_AIC: float | None = None
-    # bootstrap fit results
-    Nbst: int | None = None
-    best_fit_param_bst: dict | None = None
-    used_prior_bst: dict | None = None
-    chi2_bst: np.ndarray | None = None
-    aug_chi2_bst: np.ndarray | None = None
-
-    Q_value_bst: np.ndarray | None = None
-    AIC_bst: np.ndarray | None = None
-    aug_AIC_bst: np.ndarray | None = None
-
-    # Functional form of the fit model
-    fcn: callable = None
-
-    _result_params_dict: dict | None = None
-
-    def __post_init__(self):
-        if self.Nbst is None:
-            return
-        self.chi2_bst = np.zeros(self.Nbst)
-        self.best_fit_param_bst = {}
-        self.aug_chi2_bst = np.zeros(self.Nbst)
-        self.Q_value_bst = np.zeros(self.Nbst)
-        self.AIC_bst = np.zeros(self.Nbst)
-        self.aug_AIC_bst = np.zeros(self.Nbst)
-        self.used_prior_bst = {}  # np.zeros(self.Nbst, dtype=object)
-
-    def calc_AIC(self, nlf: lsqfit.nonlinear_fit, augmented: bool = False) -> float:
-        r"""Compute the Akaike information criterion for a fit result
-        based on the chi^2 obtained from lsqfit.
-        The form can be found in
-            https://arxiv.org/abs/2305.19417
-            https://arxiv.org/abs/2208.14983
-            https://arxiv.org/abs/2008.01069
-        equation 3 in the first:
-            AIC^{perf} = -2ln L^* + 2k - 2d_K
-        Here we compare
-            1. -2*ln(L^*) = chi^2
-            2. k = number of parameters
-            3. d_K = number of points
-
-        If priored fit, this includes the prior. For a prior less version see AICp
-        """
-        if augmented:
-            return nlf.chi2 + 2 * len(nlf.p) - 2 * len(nlf.x)
-        correction: float = 0.0
-        if nlf.prior is not None:  # if prior is none then AIC = aug_AIC
-            correction = np.sum(
-                [
-                    (nlf.prior[key].mean - nlf.p[key].mean) ** 2
-                    / nlf.prior[key].sdev ** 2
-                    for key in nlf.prior.keys()
-                ]
-            )
-        return nlf.chi2 + 2 * len(nlf.p) - 2 * len(nlf.x) - correction
-
-    def calc_aug_chi2(self, nlf: lsqfit.nonlinear_fit) -> float:
-        correction: float = 0.0
-        if (
-            nlf.prior is not None
-        ):  # if prior is None, then the chi2 from lsqfit is already the priorless chi2
-            correction = np.sum(
-                [
-                    (nlf.prior[key].mean - nlf.p[key].mean) ** 2
-                    / nlf.prior[key].sdev ** 2
-                    for key in nlf.prior.keys()
-                ]
-            )
-        return nlf.chi2 - correction
-
-    def has_bootstraps(self):
-        return self.Nbst is not None
-
-    def result_params(self, key: str | None = None) -> dict:
-        r"""
-        @param key: either "est", "err" or "bst"
-        """
-        # Log the dictionary so that we don't need to recalculate the std in case of a resampled fit
-        if self._result_params_dict is not None:
-            if key is None:
-                return self._result_params_dict
-            else:
-                return self._result_params_dict[key]
-        else:
-            self._result_params_dict = {}
-
-        self._result_params_dict["est"] = gv.mean(self.best_fit_param)
-
-        if self.has_bootstraps():
-            self._result_params_dict["bst"] = self.best_fit_param_bst
-
-            self._result_params_dict["err"] = {
-                key: np.std(gv.mean(self.best_fit_param_bst[key]), axis=0)
-                for key in self.best_fit_param.keys()
-            }
-        else:
-            self._result_params_dict["err"] = gv.mean(self.best_fit_param)
-
-        if key is None:
-            return self._result_params_dict
-        else:
-            return self._result_params_dict[key]
-
-    def eval(self, abscissa: np.ndarray | None = None) -> dict:
-        r""" """
-
-        if abscissa is None:
-            # if abscissa not provided we use a linspace with 5 times the density of the original data points.
-            abscissa = np.linspace(self.ts, self.te, 5 * (self.te - self.ts))
-
-        # out dictionary which will contain 3 keys:
-        # "est": central value fit result
-        # "err": 1 std confidence band either through bootstrap or gaussian error propagation
-        # "bst": fit result per bootstrap
-        # each contains a numpy array of floats of shape ([Nbst], len(abscissa),)
-        out = {}
-
-        gvar_eval = self.fcn(abscissa, self.best_fit_param)
-
-        out["est"] = gv.mean(gvar_eval)
-
-        if self.Nbst is not None:
-            out["bst"] = np.zeros((self.Nbst, *abscissa.shape))
-
-            param_keys = self.best_fit_param.keys()
-
-            for nbst in range(self.Nbst):
-                out["bst"][nbst] = gv.mean(
-                    self.fcn(
-                        abscissa,
-                        {key: self.best_fit_param_bst[key][nbst] for key in param_keys},
-                    )
-                )
-
-            out["err"] = np.std(out["bst"], axis=0)
-        else:
-            out["err"] = gv.sdev(gvar_eval)
-
-        return out
-
-    def import_from_nonlinear_fit(
-        self, nlf: lsqfit.nonlinear_fit, nbst: None | int = None
-    ) -> None:
-        """
-        save the interesting results from a lsqfit, if nbst is given then save in corresponding row nbst of the bootstrap parameters
-        """
-        if self.fcn is None:
-            self.fcn = nlf.fcn
-
-        if nbst is not None:
-            # self.best_fit_param_bst[nbst] = nlf.p
-            for key in list(nlf.p.keys()):  # don't want to store the log value
-                if "log" in key:
-                    key_red = key[4:-1]  # delete 'log(X)' from X
-                    if nbst == 0:
-                        self.best_fit_param_bst[key_red] = np.empty(
-                            self.Nbst, dtype=object
-                        )
-                    self.best_fit_param_bst[key_red][nbst] = np.exp(nlf.p[key])
-                else:
-                    if nbst == 0:
-                        self.best_fit_param_bst[key] = np.empty(self.Nbst, dtype=object)
-                        self.used_prior_bst[key] = np.empty(self.Nbst, dtype=object)
-                    self.best_fit_param_bst[key][nbst] = nlf.p[key]
-                    self.used_prior_bst[key][nbst] = nlf.prior[key]
-            self.chi2_bst[nbst] = self.calc_aug_chi2(nlf)
-            self.aug_chi2_bst[nbst] = nlf.chi2
-            self.Q_value_bst[nbst] = nlf.Q
-            self.AIC_bst[nbst] = self.calc_AIC(nlf)
-            self.aug_AIC_bst[nbst] = self.calc_AIC(nlf, augmented=True)
-            self.num_dof = nlf.dof
-
-            # self.used_prior_bst[nbst] = nlf.prior
-        else:
-            self.num_dof = nlf.dof
-            # self.best_fit_param = nlf.p
-            self.best_fit_param = {}
-            self.used_prior = {}
-            for key in list(nlf.p.keys()):  # don't want to store the log value
-                if "log" in key:
-                    key_red = key[4:-1]  # delete 'log(X)' from X
-                    self.best_fit_param[key_red] = np.exp(nlf.p[key])
-                else:
-                    self.best_fit_param[key] = nlf.p[key]
-                    self.used_prior[key] = nlf.prior[key]
-            self.chi2 = self.calc_aug_chi2(nlf)
-            self.aug_chi2 = nlf.chi2
-            self.Q_value = nlf.Q
-            self.AIC = self.calc_AIC(nlf)
-            self.aug_AIC = self.calc_AIC(nlf, augmented=True)
-
-            # self.used_prior = nlf.prior
-        return
-
-    def __repr__(self):
-        r"""
-        Create a representation of the central value fit results
-        """
-        rep = f"FitResult[ ({self.ts},{self.te}), resample:{self.Nbst is not None} ]:\n"
-        rep += f"  𝜒²/dof [dof] = {self.chi2/self.num_dof:.3g} [{self.num_dof}]\n"
-        rep += f"  AIC = {self.aug_AIC:.3g} \n"
-        rep += f"  Best Central Value Fit:\n"
-
-        for key, param in self.best_fit_param.items():
-
-            if self.Nbst is not None:
-                p = gv.gvar(
-                    gv.mean(param),
-                    np.std([p_.mean for p_ in self.best_fit_param_bst[key]]),
-                )
-            else:
-                p = param
-
-            rep += f"    - {key}: {p}  [{self.used_prior[key]}]\n"
-
-        return rep
-
-    # node: path in h5 file (specifies the ) h5_handel: h5File object
-    def serialize(self, h5_handle: h5py.File, node: str) -> None:
-        if self.best_fit_param is None and self.best_fit_param_bst is None:
-            raise ValueError(
-                f"Import data from a fit first before saving the data in an h5 file."
-            )
-        # for key, value in self.best_fit_param.items(): print(key,value)
-        for field in fields(self):
-            field_value = getattr(self, field.name)
-            print(
-                f"{field.name} type(field_value): {type(field_value)} is None: {field_value is None } with value {field_value}"
-            )
-            if type(field_value) == dict:  # for best_param and best_param_bst
-                for key, value in field_value.items():
-                    # split gvar data in estimate(est) and error (err) for saving in h5 file
-                    h5_handle.create_dataset(
-                        f"{node}/{field.name}/{key}/est", data=gv.mean(value)
-                    )
-                    h5_handle.create_dataset(
-                        f"{node}/{field.name}/{key}/err", data=gv.sdev(value)
-                    )
-            elif field_value is None:
-                pass
-
-            # elif type(field_value) == gv.BufferDict: #for "used_prior"
-            #     print(type(self.used_prior["E0"]),self.used_prior["E0"])
-            #     for key,value in field_value.items():
-            #         h5_handle.create_dataset(
-            #             f"{node}/{field.name}/{key}/est", data = gv.mean(value)
-            #         )
-            #         h5_handle.create_dataset(
-            #             f"{node}/{field.name}/{key}/err", data = gv.sdev(value)
-            #         )
-
-            # print("used prior passed")
-            # pass
-            # elif field.name == "fcn":
-            #     print("model passed")
-            elif isinstance(field_value, Callable):
-                h5_handle.create_dataset(
-                    f"{node}/{field.name}", data=dumps(field_value, 0)
-                )
-
-            # elif (
-            #     field.name == "best_fit_param_bst"
-            # ):  # type(field_value) == dict: #for best_fit_param_bst, when not None
-            #     for nbst, nbst_param in field_value.items():
-            #         for key, value in nbst_param.items():
-            #             h5_handle.create_dataset(
-            #                 f"{node}/{field.name}/{nbst}/{key}/est", data=gv.mean(value)
-            #             )
-            #             h5_handle.create_dataset(
-            #                 f"{node}/{field.name}/{nbst}/{key}/err", data=gv.sdev(value)
-            #             )
-            else:
-                h5_handle.create_dataset(f"{node}/{field.name}", data=field_value)
-        return
-
-    # read in data from a fit results in form of a h5 file and save as an FitResult object
-    @staticmethod
-    def deserialize(h5_handle: h5py.File, node: str) -> "FitResult":
-        # check if h5file contains bootstrap data:
-        te = h5_handle[f"{node}/te"][()]
-        ts = h5_handle[f"{node}/ts"][()]
-        if "Nbst" in h5_handle[node]:
-            Nbst = h5_handle[f"{node}/Nbst"][()]
-            res = FitResult(te=te, ts=ts, Nbst=Nbst)
-        else:
-            res = FitResult(te=te, ts=ts)
-        # read in the data:
-        for key in h5_handle[node]:
-            # The callable function needs to be decoded (unpickled)
-            if key == "fcn":
-                setattr(res, key, loads(h5_handle[f"{node}/{key}"][()]))
-                continue
-
-            if isinstance(h5_handle[f"{node}/{key}"], h5py.Dataset):
-                setattr(res, key, h5_handle[f"{node}/{key}"][()])
-            elif isinstance(
-                h5_handle[f"{node}/{key}"], h5py.Group
-            ):  # best_fit_param and best__fit_param_bst
-                if key == "best_fit_param" or "best_fit_param_bst":
-                    key_value = gv.BufferDict()
-                    for item in h5_handle[f"{node}/{key}"]:  #'A0',E0' etc.
-                        # print(item)
-                        est = h5_handle[f"{node}/{key}/{item}/est"][()]
-                        err = h5_handle[f"{node}/{key}/{item}/err"][()]
-                        key_value[item] = gv.gvar(est, err)
-                    setattr(res, key, key_value)
-                # elif key == "best_fit_param_bst":
-                #     for nbst in h5_handle[f"{node}/{key}"]:  # iterate over bootstrap id
-                #         key_value = gv.BufferDict()
-                #         for item in h5_handle[f"{node}/{key}/{nbst}"]:  #'A0',E0' etc.
-                #             # print('bootstrap',nbst,item)
-                #             est = h5_handle[f"{node}/{key}/{nbst}/{item}/est"][()]
-                #             err = h5_handle[f"{node}/{key}/{nbst}/{item}/err"][()]
-                #             key_value[item] = gv.gvar(est, err)
-                #         # print(key_value)
-                #         # setattr(res,key[int(nbst)],key_value)
-                #         res.best_fit_param_bst[int(nbst)] = key_value
-                #         # print(getattr(res,key),int(nbst))
-        return res
-
-    ## At each time the state defines an iterator over the tracked fits
-    ## We simply expose the list here
-    ## TODO: Is there a more elegant way?
-    def __iter__(self):
-        return self.fit_results.__iter__()
-
-    def __next__(self):
-        return self.fit_results.__next__()
-
+from .fitResult import FitResult
 
 def fit(
     *,
     abscissa: np.ndarray,
     ordinate_est: np.ndarray[gv.GVar] | None = None,
-    ordinate_var: np.ndarray[gv.GVar] | None = None,
+    ordinate_std: np.ndarray[gv.GVar] | None = None,
     ordinate_cov: np.ndarray[gv.GVar] | None = None,
-    bootstrap_ordinate_est: np.ndarray[gv.GVar] | None = None,
-    bootstrap_ordinate_var: np.ndarray[gv.GVar] | None = None,
-    bootstrap_ordinate_cov: np.ndarray[gv.GVar] | None = None,
+    resample_ordinate_est: np.ndarray[gv.GVar] | None = None,
+    resample_ordinate_std: np.ndarray[gv.GVar] | None = None,
+    resample_ordinate_cov: np.ndarray[gv.GVar] | None = None,
     # fit strategy, default: only uncorrelated central value fit:
     central_value_fit: bool = True,
     central_value_fit_correlated: bool = False,
-    bootstrap_fit: bool = False,
-    bootstrap_fit_correlated: bool = False,
-    bootstrap_fit_resample_prior: bool = True,
+    resample_fit: bool = False,
+    resample_fit_correlated: bool = False,
+    resample_fit_resample_prior: bool = True,
+    resample_type: str | None = None,
     # args for lsqfit:
-    model: callable = None,
-    prior: dict = None,
-    p0: dict = None,
-    svdcut: float = None,
-    eps: float = None,
+    model: Callable | None = None,
+    prior: dict | None = None,
+    p0: dict | None = None,
+    svdcut: float | None = None,
     maxiter: int = 10_000,
 ) -> FitResult:
     r"""!
-    @param abscissa: datapoints for the x-axis (i.e. an array containing Nt times (shape (Nt,))
-    @param ordinate_est: datapoints for the y-axis (i.e. an array containing the datapoints measured at Nt times (shape (Nt,))
-    @param ordinate_var: variance of the given y datapoints (i.e. an array containing the error of the measured datapoints (shape (Nt,))
-    @param ordinate_cov: covariance matrix of the y datapoints to specify the correlation betweem them
-    @param bootstrap_ordinate_est: datapoints for the y-axis for each bootstrap (array of shape (Nbst,Nt))
-    @param bootstrap_ordinate_var: variance of the datapoints for each bootstrap (array of shape (Nbst,Nt) or (Nt,), the latter uses the given variance for all bootstraps)
-    @param bootstrap_ordinate_cov: covariance matrix of the datapoints for each bootstrap (array of shape (Nbst,Nt,Nt) or (Nt,Nt), the latter uses the given covariance matrix for all bootstraps)
+        @param abscissa: datapoints for the x-axis (i.e. an array containing Nt times (shape (Nt,))
+        @param ordinate_est: datapoints for the y-axis (i.e. an array containing the datapoints measured at Nt times (shape (Nt,))
+        @param ordinate_std: standard deviation of the given y datapoints (i.e. an array containing the error of the measured datapoints (shape (Nt,))
+        @param ordinate_cov: covariance matrix of the y datapoints to specify the correlation betweem them
+        @param resample_ordinate_est: datapoints for the y-axis for each resample (array of shape (Nres,Nt))
+        @param resample_ordinate_std: standard deviation of the datapoints for each resample (array of shape (Nres,Nt) or (Nt,), the latter uses the given variance for all resamples)
+        @param resample_ordinate_cov: covariance matrix of the datapoints for each resample (array of shape (Nres,Nt,Nt) or (Nt,Nt), the latter uses the given covariance matrix for all resamples)
 
-    @param central_value_fit: option whether a central value fit should be performed (default: True)
-    @param central_value_fit_correlated: option whether correlated fit should be performed (default: False)
-    @param bootstrap_fit: option whether a bootstrap fit should be performed (delfault: False)
-    @param bootstrap_ft_corrrelated: option whether a correlated bootstrap fit should be performed (default: False)
-    @param bootstrap_fit_resample_prior: option whether the meanvalue of the prior should be resampled for each bootstrap, without resampling (option 'False') the same meanvalue for the prior is used for all bootstraps (default: True)
+        @param central_value_fit: option whether a central value fit should be performed (default: True)
+        @param central_value_fit_correlated: option whether correlated fit should be performed (default: False)
+        @param resample_fit: option whether a resample fit should be performed (delfault: False)
+        @param resample_ft_corrrelated: option whether a correlated resample fit should be performed (default: False)
+        @param resample_fit_resample_prior: option whether the meanvalue of the prior should be resampled for each resample, without resampling (option 'False') the same meanvalue for the prior is used for all resamples (default: True)
+        @param resample_type: a string representing a resample type (None, 'bst' bootstrap, 'jkn' jackknife). This is passed to the FitResult to determine error calculation.
 
-    @param model: the function to be fit to the datapoints, arguments should be the abscissa and the fit parameters
-    @param prior: a priori estimates for the fit parameters (default: None)
-    @po: start value for the fit parameters (default:None)
-    @maxiter: the maximum of iterations to perform the fit (default: 10_000)
-    This function peforms a fit using lsqfit by Peter Lapage. Default is an uncorrelated central value fit.
-    Optional are a correlated central value fit and a correlated (uncorrelated) bootstrap fit. The the best parameters for the fit are then returned
+        @param model: the function to be fit to the datapoints, arguments should be the abscissa and the fit parameters
+        @param prior: a priori estimates for the fit parameters (default: None)
+        @param p0: start value for the fit parameters (default:None)
+        @param maxiter: the maximum of iterations to perform the fit (default: 10_000)
+        This function peforms a fit using lsqfit by Peter Lapage. Default is an uncorrelated central value fit.
+        Optional are a correlated central value fit and a correlated (uncorrelated) resample fit. The the best parameters for the fit are then returned
     """
 
-    # check if all necessary arguments are passed:
-    if not (central_value_fit or bootstrap_fit):
-        raise ValueError(
-            f"at least one fit strategy needs to be defined: central_value_fit or bootstrap_fit"
-        )
+    # Ensure that we got at least one fitting strategy (both are possible and will be handled accordingly)
+    if not (central_value_fit or resample_fit):
+        raise ValueError(f"At least one fit strategy needs to be defined: central_value_fit or resample_fit")
 
-    if central_value_fit:
-        if ordinate_est is None and bootstrap_ordinate_est is None:
-            raise ValueError(
-                f"central value fit requires ordinate_est (alternatively bootstrap_ordinate_est)"
-            )
-        if (
-            ordinate_var is None
-            and ordinate_cov is None
-            and bootstrap_ordinate_var is None
-            and bootstrap_ordinate_cov is None
-        ):
-            raise ValueError(
-                f"central value fit requires at least one: ordinate_var or ordinate_cov (alternatively bootstrap_ordinate_var or bootstrap_ordinate_cov)"
-            )
-        if (
-            central_value_fit_correlated
-            and ordinate_cov is None
-            and bootstrap_ordinate_cov is None
-        ):
-            raise ValueError(
-                f"central value fit (correlated) requires ordinate_cov (alternativly bootstrap_ordinate_cov)"
-            )
-        if (
-            not central_value_fit_correlated
-            and ordinate_var is None
-            and bootstrap_ordinate_var is None
-        ):
-            warnings.warn(
-                f"variance provided through covariance in uncorrelated central value fit"
-            )
-
-    if bootstrap_fit:
-        if bootstrap_ordinate_est is None:
-            raise ValueError(f"bootrstap fit requires bootstrap_ordinate_est")
-        if bootstrap_ordinate_var is None and bootstrap_ordinate_cov is None:
-            raise ValueError(
-                f"bootstrap fit requires at least one: bootstrap_ordinate_var or bootstrap_ordinate_cov"
-            )
-        if bootstrap_fit_correlated and bootstrap_ordinate_cov is None:
-            raise ValueError(
-                f"bootstrap fit (correlated) requires bootstrap_ordinate_cov"
-            )
-        if not bootstrap_fit_correlated and bootstrap_ordinate_var is None:
-            warnings.warn(
-                f"variance provided through covariance in uncorrelated bootstrap fit"
-            )
 
     # check if the given arguments have the correct dimensions:
-    if abscissa.ndim != 1:
-        raise ValueError(f"abscissa should be one dimensional")
-    (Nt,) = abscissa.shape
-    if bootstrap_ordinate_est is not None:
-        Nbst, _ = bootstrap_ordinate_est.shape
+    
+    # The first axis defines the number of points, we may allow abscissas with more than one dimension
+    # where the user needs to ensure that the respective model function fcn(abscissa, p) -> np.array
+    # reduces to the output shape of the ordinate. 
+    # e.g. in Lattice QCD we may analyse 3-point correlators with a source-sink separation t and an 
+    # insertion time tau: C3pt(t,tau). 
+    # Now one wants to fit multiple t,tau data points thus organizes the data such that
+    # abscissa = [(t1,0), (t1,1), ..., (t1,t1+1), (t2,0), ... (t2,t2+1), ... ]
+    # and respectively 
+    # ordinate_est = [ C3pt(t1,0), C3pt(t1,1), ..., C3pt(t1,t1+1), ... ]
+    # Then abscissa is two dimensional and the size of the first axis equals the number of data points
+    # to fit against. 
+    N = abscissa.shape[0]
 
-    if ordinate_est is not None:
-        if ordinate_est.shape != (Nt,):
-            raise ValueError(f"abscissa and ordinate_est should have the same shape")
-    if ordinate_var is not None:
-        if ordinate_var.shape != (Nt,):
-            raise ValueError(f"abscissa and ordinate_var should have the same shape")
-    if ordinate_cov is not None:
-        if ordinate_cov.shape != (Nt, Nt):
-            raise ValueError(
-                f"ordinate_cov should have the shape (Nt,Nt), but has {ordinate_cov.shape}"
-            )
-    if bootstrap_ordinate_est is not None:
-        if bootstrap_ordinate_est.shape != (Nbst, Nt):
-            raise ValueError(f"bootstrap_ordinate_est should have shape (Nbst,Nt)")
-    if bootstrap_ordinate_var is not None:
-        if bootstrap_ordinate_var.shape != (
-            Nbst,
-            Nt,
-        ) and bootstrap_ordinate_var.shape != (Nt,):
-            raise ValueError(
-                f"bootstrap_ordinate_var should have shape (Nbst,Nt) or (Nt,), but has {bootstrap_ordinate_var.shape}"
-            )
-    if bootstrap_ordinate_cov is not None:
-        if bootstrap_ordinate_cov.shape != (
-            Nbst,
-            Nt,
-            Nt,
-        ) and bootstrap_ordinate_cov.shape != (Nt, Nt):
-            raise ValueError(
-                f"bootstrap_ordinate_cov should have shape (Nbst,(Nt,Nt)) or (Nt,Nt), but has {bootstrap_ordinate_cov.shape}"
-            )
+
+    # In case a central value fit is supposed to be performed check the accessibility of relevant parameters
+    # Central Value fit requires
+    #   - ordinate_est 
+    #   - optional: ordinate_std
+    #   - optional: covariance 
+    if central_value_fit:
+
+        # We need ordinate data to fit against. 
+        # We can either use provided ordinate_est or fit against the mean over resample_ordinate_est
+        # Check that at least one is provided
+        if ordinate_est is None and resample_ordinate_est is None:
+            raise ValueError(f"Central value fit requires ordinate_est (or resample_ordinate_est)")
+
+        # In case a central value fit is desired check that covariance matrix is provided
+        if central_value_fit_correlated and ordinate_cov is None:
+            raise ValueError(f"Central value fit (correlated) requires ordinate_cov")
+
+
+        # ##############################################################################################
+        # Now all relevant parameters are there. We now deduce the fitting strategy and check the arrays
+        # for the correct size.
+
+        # The organization of ordinate_est.shape = Nt, ...
+        # i.e. the first axis must match the first axis of abscissa. 
+        # Further, dimensions are ignored and must be handled by the fit model
+        if ordinate_est.shape[0] != N:
+            raise ValueError(f"Expecting ordinate_est ({ordinate_est.shape}) with same first axis size as abscissa ({abscissa.shape})")
+
+        # ordinate_std is optional
+        if ordinate_std is not None:
+            if ordinate_std.shape[0] != N:
+                raise ValueError(f"Expecting ordinate_std ({ordinate_std.shape}) with same first axis size as abscissa ({abscissa.shape})")
+
+        # ordinate_cov is optional
+        if ordinate_cov is not None:
+            if ordinate_cov.shape != (N, N):
+                raise ValueError(f"Expecting ordinate_cov of shape ({N},{N}), but has {ordinate_cov.shape}")
+
+    # In case resampled fits are supposed to be performed check the accessibility of relevant parameters
+    # Resampled fits requires
+    #   - ordinate 
+    #   - covariance (if correlated)
+    #   - Resample types ('bst' by default)
+    if resample_fit:
+
+        if resample_ordinate_est is None:
+            raise ValueError(f"Resampled fit requires resample_ordinate_est")
+        
+        if resample_fit_correlated and resample_ordinate_cov is None:
+            raise ValueError(f"Resampled fit (correlated) requires resample_ordinate_cov")
+
+        # Check that resample_type is provided and if not set default as 'bootstrap'
+        # We raise a warning in case it is not provided
+        if resample_type is None:
+            resample_type = 'bst'
+
+            warnings.warn(f"Expecting resample_type but is not provided... Choosing bootstrap ('bst') by default")
+
+        # ##############################################################################################
+        # Now all relevant parameters are there. We now deduce the fitting strategy and check the arrays
+        # for the correct size.
+
+        # Extract number of resamples 
+        Nres = resample_ordinate_est.shape[0]
+
+        # The organization of resample_ordinate_est.shape = Nres, Nt, ...
+        # i.e. the second axis must match the first axis of abscissa. 
+        # Further, dimensions are ignored and must be handled by the fit model
+        if resample_ordinate_est.shape[1] != N:
+            raise ValueError(f"Expecting resample_ordinate_est ({resample_ordinate_est.shape}) with same second axis size as abscissa ({abscissa.shape}) first axis size")
+        
+        # resample_ordinate_std is optional
+        if resample_ordinate_std is not None:
+            # We expect resample_ordinate_std by dimensions
+            # 1. (Nbst, N, ...), i.e. one uncertainty per resample
+            # 2. (N, ...), i.e. one uncertainty for all resamples (frozen)
+
+            # case 1:
+            if resample_ordinate_std.shape[0] == Nres:
+                if resample_ordinate_std.shape[1] != N:
+                    raise ValueError(f"Expecting resample_ordinate_std of shape (Nres,N, ...) or (N, ...) but has {resample_ordinate_std.shape}")
+            # case 2:
+            else :
+                if resample_ordinate_std.shape[0] != N:
+                    raise ValueError(f"Expecting resample_ordinate_std of shape (Nres,N, ...) or (N, ...) but has {resample_ordinate_std.shape}")
+
+        # resample_ordinate_cov is optional
+        if resample_ordinate_std is not None:
+            # We expect resample_ordinate_cov by dimensions
+            # 1. (Nbst, N, N), i.e. one uncertainty per resample
+            # 2. (N, N), i.e. one uncertainty for all resamples (frozen)
+
+            # case 1:
+            if resample_ordinate_cov.shape[0] == Nres:
+                if resample_ordinate_cov.shape[1] != N and resample_ordinate_cov.shape[2] != N and resample_ordinate_cov.ndim == 3:
+                    raise ValueError(f"Expecting resample_ordinate_cov of shape (Nres,N,N) or (N,N) but has {resample_ordinate_cov.shape}")
+            # case 2:
+            else :
+                if resample_ordinate_cov.shape[0] != N and resample_ordinate_cov.shape[1] != N and resample_ordinate_cov.ndim == 2:
+                    raise ValueError(f"Expecting resample_ordinate_cov of shape (Nres,N,N) or (N,N) but has {resample_ordinate_cov.shape}")
+    
+    # Check the existence of the model function
+    if model is None:
+        raise ValueError(f"A model for the fit is required, the function should have abscissa and the parameters as an argument")
+
+    # Determine if we work with priors or simple start parameters
+    if prior is None and p0 is None:
+        raise ValueError(f"At least one of prior or p0 needs to be defined")
+    
+    # ##############################################################################################
+    # ##############################################################################################
+    # Now all relevant parameters are there and have the expected shapes. 
+    # We can now fill a dictionary args that is providing relevant information to the underlying fitter
+    # provided by lsqfit  
+    # ##############################################################################################
+    # ##############################################################################################
 
     # prepare the arguments for lsqfit
     args = {}
-    if model is None:
-        raise ValueError(
-            f"a model for the fit is required, the function should have abscissa and the parameters as an argument"
-        )
+
+    # populate the fit function
     args["fcn"] = model
+
+    # populate a maximal iteration for the minimizer
     args["maxit"] = maxiter
-    if prior is None and p0 is None:
-        raise ValueError(f"at least one of prior and p0 needs to be defined")
+
+    # populate the prior/start parameter
+    # on resamples, the prior mean may be resampled depending on
+    # use of prior and the resample_fit_resample_prior
     args["prior" if prior is not None else "p0"] = prior if prior is not None else p0
 
-    # res = {}
+    # svdcut is optional
+    if svdcut is not None:
+        args["svdcut"] = svdcut
 
-    if bootstrap_fit:
-        res = FitResult(
-            ts=abscissa[0], te=abscissa[-1], Nbst=Nbst
-        )  # prepare res for saving the bootstrap and possible central value fit results
-    else:
-        res = FitResult(
-            ts=abscissa[0], te=abscissa[-1]
-        )  # prepare res for central value fit results only
+    # define a FitResult that can be returned
+    if resample_fit:
+        # prepare for saving the resamples and possible central value fit results
+        fit_result = FitResult(
+            # start point of the fit interval
+            ts=abscissa[0], 
+            # end point of the fit interval
+            te=abscissa[-1], 
+            # number of resamples
+            Nres=Nres, 
+            # resample type
+            resample_type = resample_type
+        )  
+    else: 
+        # prepare for central value fit results only
+        fit_result = FitResult(
+            # start point of the fit interval
+            ts=abscissa[0], 
+            # end point of the fit interval
+            te=abscissa[-1]
+        ) 
 
-    # # prepare data for the central value fit:
+    # prepare data for the central value fit:
     if central_value_fit:
-        # for the uncorrelated fit check in which way the variance is given and save in temp
+        # for the uncorrelated fit check in which way the standard deviation is given and save in temp
         if not central_value_fit_correlated:
-            if ordinate_var is not None:
-                temp: np.ndarray = ordinate_var
+            # simply provided standard deviation (preferred pass)
+            if ordinate_std is not None:
+                temp: np.ndarray = ordinate_std
+            
+            # provided covariance in case standard deviation is not given (preferred pass)
             elif ordinate_cov is not None:
                 temp: np.ndarray = np.diag(ordinate_cov)
-                print(f"Debug 1")
-            elif bootstrap_ordinate_var is not None:
-                if bootstrap_ordinate_var.shape == (Nt,):
-                    temp: np.ndarray = bootstrap_ordinate_var
-                if bootstrap_ordinate_var.shape == (Nbst, Nt):
-                    raise ValueError(
-                        f"no variance specified for central value fit, only bootstrap_ordinate_var with shape {bootstrap_ordinate_var.shape}"
-                    )
-            elif bootstrap_ordinate_cov is not None:
-                if bootstrap_ordinate_cov.shape == (Nt, Nt):
-                    temp: np.ndarray = np.diag(bootstrap_ordinate_cov)
+
+            # provided resample standard deviation only, we can attempt to reuse it (optional pass for reusability)
+            # if the dimension matches the expected standard deviation (frozen case for resampled fits)
+            elif resample_ordinate_std is not None:
+                if resample_ordinate_std.shape[0] == N:
+                    temp: np.ndarray = resample_ordinate_std
                 else:
-                    raise ValueError(
-                        f"no variance given and could not be extracted from bootstrap_ordinate_cov with shape {bootstrap_ordinate_cov.shape}"
-                    )
+                    raise ValueError(f"No standard deviation specified for central value fit, only resample_ordinate_std with shape {resample_ordinate_var.shape}")
+
+            # Same as above but with covariance (optional pass for reusability)
+            elif resample_ordinate_cov is not None:
+                if resample_ordinate_cov.shape == (N, N):
+                    temp: np.ndarray = np.diag(resample_ordinate_cov)
+                else:
+                    raise ValueError(f"No standard devation given and could not be extracted from resample_ordinate_cov with shape {resample_ordinate_cov.shape}")
+            
+            # standard deviation not provided, doing an unweighted fit 
+            else:
+                temp: np.ndarray = np.ones_like(ordinate_est)
+
+
         # for the correlated fit check in which way the covariance  is given and save in temp
         else:
+            # simply provided covariance (preferred pass)
             if ordinate_cov is not None:
                 temp: np.ndarray = ordinate_cov
-            elif bootstrap_ordinate_cov is not None:
-                if bootstrap_ordinate_cov.shape == (Nt, Nt):
-                    temp: np.ndarray = bootstrap_ordinate_cov
-                if bootstrap_ordinate_cov.shape == (Nbst, Nt, Nt):
-                    raise ValueError(
-                        f"no covariance specified for central value fit, only bootstrap_ordinate_cov with shape {bootstrap_ordinate_cov.shape}"
-                    )
-            # ToDo: if bootstrap_ordinate_est is given, calculate covariance from that with np.cov(bootstrap_ordinate_est,rowvar=False)
+            # provided resample covariance only, we can attempt to reuse it (optional pass for reusability)
+            # if the dimension matches the expected covariance (frozen case for resampled fits)
+            elif resample_ordinate_cov is not None:
+                if resample_ordinate_cov.shape == (N, N):
+                    temp: np.ndarray = resample_ordinate_cov
+                else:
+                    raise ValueError(f"No covariance specified for central value fit, only resample_ordinate_cov with shape {resample_ordinate_cov.shape}")
+            else:
+                raise ValueError(f"No covariance given and could not be extracted")
+
         ordinate_gvar = gv.gvar(
-            (
-                ordinate_est
-                if ordinate_est is not None
-                else np.mean(bootstrap_ordinate_est, axis=0)
-            ),
+            # at least one is provided as checked above
+            ordinate_est if ordinate_est is not None else np.mean(resample_ordinate_est, axis=0),
+            # put the standard deviation/covariance as extraced into temp
             temp,
         )
-        args["data" if central_value_fit_correlated else "udata"] = (
-            abscissa,
-            ordinate_gvar,
-        )
 
-        # Do the fit with lsqfit
+        # Ensure un-/correlated fits are preformed by providing the correct data form to lsqfit
+        # data :   correlated fit
+        # udata: uncorrelated fit
+        args["data" if central_value_fit_correlated else "udata"] = (abscissa, ordinate_gvar)
+
+
+        # ##############################################################################################
+        # Now all required fields in args are populated to attempt a fit 
+        # ##############################################################################################
+
         try:
-            res.import_from_nonlinear_fit(
-                nlf=lsqfit.nonlinear_fit(**args)
-            )  # Save the fit results in res (object of type FitResult)
-            # res["central value fit"] = lsqfit.nonlinear_fit(**args)  # FitResult()
-
+            # Save the fit results in fit_result (object of type FitResult)
+            fit_result.import_from_lsqfit(nlf=lsqfit.nonlinear_fit(**args))  
+        
+        # In case something goes wrong we collect additional information and extend the exception message 
         except Exception as e:
             msg = f"Fit Failed: :\n"
             for key, val in args.items():
                 msg += f"- {key}: {val}\n"
             raise RuntimeError(f"{msg}\n{e}")
 
-    if not bootstrap_fit:
-        # with h5py.File("../Report/FitResult.h5", "w") as h5f:
-        #    res.serialize(h5_handle=h5f, node=f"timeslice_{abscissa[0]}_{abscissa[-1]}")
-        #    FitResult.deserialize(
-        #        h5_handle=h5f, node=f"timeslice_{abscissa[0]}_{abscissa[-1]}"
-        #    )
-        return res  # return fit results
 
-    # prepare data for a bootstrap fit
-    for nbst in range(Nbst):
-        # for uncorrelated bootstrap fit check in which way the variance is given and save in temp
-        if not bootstrap_fit_correlated:
-            if bootstrap_ordinate_var is not None:
-                if bootstrap_ordinate_var.shape == (Nt,):
-                    temp = bootstrap_ordinate_var
-                if bootstrap_ordinate_var.shape == (Nbst, Nt):
-                    temp = bootstrap_ordinate_var[nbst]
-            elif bootstrap_ordinate_cov is not None:
-                temp: np.ndarray = np.diag(bootstrap_ordinate_cov)
-        # for a correlated bootstrap fit check in which way the covariance is given and save in temp
+    # end if central value fit
+    
+    # If no resampled fits are supposed to be done we can return here
+    if not resample_fit:
+        # return fit results
+        return fit_result
+
+    # prepare data for a resample fit
+    for nres in range(Nres):
+        # for uncorrelated resampled fits check in which way the standard is given and save in temp
+        if not resample_fit_correlated:
+            # simply provided standard deviation 
+            if resample_ordinate_std is not None:
+                # frozen error: one for all
+                if resample_ordinate_std.shape[0] == N:
+                    temp: np.ndarray = resample_ordinate_std
+                # one std for each resample
+                elif resample_ordinate_std.shape[0] == Nres:
+                    temp: np.ndarray = resample_ordinate_std[nres]
+                else:
+                    raise ValueError(f"Couldn't identify resample standard deviation from provided resample_ordinate_std of shape {resample_ordinate_std.shape}")
+            # provided covariance in case standard deviation is not given
+            elif resample_ordinate_cov is not None:
+                # frozen error: one for all
+                if resample_ordinate_cov.shape[0] == N and resample_ordinate_cov.shape[1] == N:
+                    temp: np.ndarray = np.diag(resample_ordinate_cov)
+                # one std for each resample
+                elif resample_ordinate_cov.shape[0] == Nres and resample_ordinate_cov.shape[1] == N and resample_ordinate_cov.shape[2] == N:
+                    temp: np.ndarray = np.diag(resample_ordinate_cov[nres,:,:])
+                else:
+                    raise ValueError(f"Couldn't identify resample standard deviation from provided resample_ordinate_cov of shape {resample_ordinate_cov.shape}")
+
+            # standard deviation not provided, doing an unweighted fit 
+            else:
+                temp: np.ndarray = np.ones_like(resample_ordinate_est[nres])
+
+        # for a correlated resample fit check in which way the covariance is given and save in temp
         else:
-            if bootstrap_ordinate_cov.shape == (Nt, Nt):
-                temp = bootstrap_ordinate_cov
-            if bootstrap_ordinate_cov.shape == (Nbst, Nt, Nt):
-                temp = bootstrap_ordinate_cov[nbst]
+            # simply provided covariance
+            # frozen covariance: one for all
+            if resample_ordinate_cov.shape[0] == N and resample_ordinate_cov.shape[1] == N:
+                temp = resample_ordinate_cov
+            # one covariance per resample
+            elif resample_ordinate_cov.shape[0] == Nres and resample_ordinate_cov.shape[1] == N and resample_ordinate_cov.shape[2] == N:
+                temp = resample_ordinate_cov[nres]
+            else:
+                raise ValueError(f"Couldn't identify resample covariance from provided resample_ordinate_cov of shape {resample_ordinate_cov.shape}")
 
-        ordinate_gvar = gv.gvar(bootstrap_ordinate_est[nbst, :], temp)
-        args["data" if bootstrap_fit_correlated else "udata"] = (
-            abscissa,
-            ordinate_gvar,
+
+        ordinate_gvar = gv.gvar(
+            # each resample has its own ordinate data    
+            resample_ordinate_est[nres, :], 
+            # and deduced uncertainty
+            temp
         )
-        # varying the prior mean value for each bootstrap sample, to avoid bias
-        if prior is not None and bootstrap_fit_resample_prior:
-            prior_bst = gv.BufferDict()
+
+        # Ensure un-/correlated fits are preformed by providing the correct data form to lsqfit
+        # data :   correlated fit
+        # udata: uncorrelated fit
+        args["data" if resample_fit_correlated else "udata"] = (abscissa, ordinate_gvar)
+
+        # varying the prior mean value for each resample sample, to avoid bias
+        if prior is not None and resample_fit_resample_prior:
+            prior_res = gv.BufferDict()
+
             for key in prior.keys():
-                prior_bst[key] = gv.gvar(gv.sample(prior[key], 1), prior[key].sdev)
-            args["prior"] = prior_bst
+                prior_res[key] = gv.gvar(gv.sample(prior[key], 1), prior[key].sdev)
+            
+            args["prior"] = prior_res
+
+        # ##############################################################################################
+        # Now all required fields in args are populated to attempt a fit 
+        # ##############################################################################################
+            
         try:
-            # pass
-            res.import_from_nonlinear_fit(
-                lsqfit.nonlinear_fit(**args), nbst
-            )  # Do the fit with lsqfit
+            # Save the fit results in fit_result (object of type FitResult)
+            fit_result.import_from_lsqfit(nlf = lsqfit.nonlinear_fit(**args), nres = nres)
+
+        # In case something goes wrong we collect additional information and extend the exception message 
         except Exception as e:
             msg = f"Fit Failed: :\n"
             for key, val in args.items():
                 msg += f"- {key}: {val}\n"
-            msg += f"- nbst: {nbst}\n"
+            msg += f"- nres: {nres}\n"
             raise RuntimeError(f"{msg}\n{e}")
 
-    # with h5py.File("../Report/FitResult.h5", "w") as h5f:
-    #    res.serialize(h5_handle=h5f, node=f"timeslice_{abscissa[0]}_{abscissa[-1]}")
-    #    FitResult.deserialize(
-    #        h5_handle=h5f, node=f"timeslice_{abscissa[0]}_{abscissa[-1]}"
-    #    )
-    return res
+
+    return fit_result
 
 
-def test_defensive(Nt: int = 32, Nbst: int = 100):
-    abscissa: np.ndarray = np.zeros(Nt)
-    ordinate_est: np.ndarray[gv.GVar] = np.zeros(Nt, dtype=gv.GVar)
-    ordinate_var: np.ndarray[gv.GVar] = np.zeros(Nt, dtype=gv.GVar)
-    ordinate_cov: np.ndarray[gv.GVar] = np.zeros((Nt, Nt), dtype=gv.GVar)
-
-    bootstrap_ordinate_est: np.ndarray[gv.GVar] = np.zeros((Nbst, Nt), dtype=gv.GVar)
-    bootstrap_ordinate_var: np.ndarray[gv.GVar] = np.zeros((Nbst, Nt), dtype=gv.GVar)
-    bootstrap_ordinate_cov: np.ndarray[gv.GVar] = np.zeros(
-        (Nbst, Nt, Nt), dtype=gv.GVar
-    )
-
-    # tesing arguments for uncorr. central value fit:
-    # 1. correct arguments should not raise
-    fit(abscissa=abscissa, ordinate_est=ordinate_est, ordinate_var=ordinate_var)
-    # 2. partially wrong argumuments(covariance instead of variance) should warn
-    fit(abscissa=abscissa, ordinate_est=ordinate_est, ordinate_cov=ordinate_cov)
-    # 3. partially wrong (bootstrap arguments instaed of central value arguments)
-    fit(
-        abscissa=abscissa,
-        bootstrap_ordinate_est=bootstrap_ordinate_est,
-        bootstrap_ordinate_var=bootstrap_ordinate_var,
-    )
-    # 4. partially wrong (bootstrap arguments instead of central value and covariance instead of variance)
-    fit(
-        abscissa=abscissa,
-        bootstrap_ordinate_est=bootstrap_ordinate_est,
-        bootstrap_ordinate_cov=bootstrap_ordinate_cov,
-    )
-    # 5. wrong arguments
-    with pytest.raises(TypeError) as E:
-        fit()  # -> req. abscissa
-    assert E.type is TypeError
-    with pytest.raises(ValueError) as E:
-        fit(abscissa=abscissa)  # -> req. ordinate_est
-    assert E.type is ValueError
-    with pytest.raises(ValueError) as E:
-        fit(
-            abscissa=abscissa, ordinate_est=ordinate_est
-        )  # -> req. ordinate_var (ordinate_cov)
-    assert E.type is ValueError
-
-    # testing arguments for correlated central value fit:
-    # 1. correct arguments should not raise
-    fit(
-        abscissa=abscissa,
-        ordinate_est=ordinate_est,
-        ordinate_cov=ordinate_cov,
-        central_value_fit_correlated=True,
-    )
-    # 2. partially wrong (bootstrap arguments instaed of central value arguments)
-    fit(
-        abscissa=abscissa,
-        bootstrap_ordinate_est=bootstrap_ordinate_est,
-        bootstrap_ordinate_cov=bootstrap_ordinate_cov,
-        central_value_fit_correlated=True,
-    )
-    # 3. wrong argumuments
-    with pytest.raises(ValueError) as E:
-        fit(
-            abscissa=abscissa,
-            ordinate_est=ordinate_est,
-            ordinate_var=ordinate_var,
-            central_value_fit_correlated=True,
-        )  # -> req. ordinate_cov
-    assert E.type is ValueError
-    with pytest.raises(ValueError) as E:
-        fit(
-            abscissa=abscissa,
-            ordinate_est=ordinate_est,
-            central_value_fit_correlated=True,
-        )  # -> req. ordinate_cov
-    assert E.type is ValueError
-
-    # testing arguments for uncorr. bootstrap fit, no central value fit:
-    # 1. correct arguments should not raise
-    fit(
-        abscissa=abscissa,
-        bootstrap_ordinate_est=bootstrap_ordinate_est,
-        bootstrap_ordinate_var=bootstrap_ordinate_var,
-        central_value_fit=False,
-        bootstrap_fit=True,
-    )
-    # 2. partially wrong argumuments(covariance instead of variance) should warn
-    fit(
-        abscissa=abscissa,
-        bootstrap_ordinate_est=bootstrap_ordinate_est,
-        bootstrap_ordinate_cov=bootstrap_ordinate_cov,
-        central_value_fit=False,
-        bootstrap_fit=True,
-    )
-    # 3. wrong arguments
-    with pytest.raises(ValueError) as E:
-        fit(
-            abscissa=abscissa, central_value_fit=False, bootstrap_fit=True
-        )  # -> req. bootstrap_ordinate_est
-    assert E.type is ValueError
-    with pytest.raises(ValueError) as E:
-        fit(
-            abscissa=abscissa,
-            bootstrap_ordinate_est=bootstrap_ordinate_est,
-            central_value_fit=False,
-            bootstrap_fit=True,
-        )  # -> req. bootstrap_ordinate_var (bootstrap_ordinate_cov)
-    assert E.type is ValueError
-
-    # testing arguments for correlated bootstrap fit, no central value fit:
-    # 1. correct arguments should not raise
-    fit(
-        abscissa=abscissa,
-        bootstrap_ordinate_est=bootstrap_ordinate_est,
-        bootstrap_ordinate_cov=bootstrap_ordinate_cov,
-        central_value_fit=False,
-        bootstrap_fit=True,
-        bootstrap_fit_correlated=True,
-    )
-    # 2. wrong argumuments
-    with pytest.raises(ValueError) as E:
-        fit(
-            abscissa=abscissa,
-            bootstrap_ordinate_est=bootstrap_ordinate_est,
-            bootstrap_ordinate_var=bootstrap_ordinate_var,
-            central_value_fit=False,
-            bootstrap_fit=True,
-            bootstrap_fit_correlated=True,
-        )  # -> req. bootstrap_ordinate_cov
-    assert E.type is ValueError
-    with pytest.raises(ValueError) as E:
-        fit(
-            abscissa=abscissa,
-            bootstrap_ordinate_est=bootstrap_ordinate_est,
-            central_value_fit=False,
-            bootstrap_fit=True,
-            bootstrap_fit_correlated=True,
-        )  # req. bootstrap_ordinate_cov
-    assert E.type is ValueError
-
-    # tesing arguments for uncorr. bootstrap fit and uncorr. central value fit:
-    # 1. correct arguments should not raise
-    fit(
-        abscissa=abscissa,
-        ordinate_est=ordinate_est,
-        ordinate_var=ordinate_var,
-        bootstrap_ordinate_est=bootstrap_ordinate_est,
-        bootstrap_ordinate_var=bootstrap_ordinate_var,
-        bootstrap_fit=True,
-    )
-    # 2. partially wrong argumuments(covariance instead of variance) should warn
-    fit(
-        abscissa=abscissa,
-        ordinate_est=ordinate_est,
-        ordinate_cov=ordinate_cov,
-        bootstrap_ordinate_est=bootstrap_ordinate_est,
-        bootstrap_ordinate_cov=bootstrap_ordinate_cov,
-        bootstrap_fit=True,
-    )
-    # 3. wrong arguments
-    with pytest.raises(ValueError) as E:
-        fit(
-            abscissa=abscissa, ordinate_est=ordinate_est, bootstrap_fit=True
-        )  # -> req. bootstrap_ordinate_est
-    assert E.type is ValueError
-    with pytest.raises(ValueError) as E:
-        fit(
-            abscissa=abscissa,
-            ordinate_est=ordinate_est,
-            bootstrap_ordinate_est=bootstrap_ordinate_est,
-            bootstrap_fit=True,
-        )  # -> req. bootstrap_ordinate_var (bootstrap_ordinate_cov) and ordinate_var (ordinate_cov)
-    assert E.type is ValueError
-    with pytest.raises(ValueError) as E:
-        fit(
-            abscissa=abscissa,
-            ordinate_est=ordinate_est,
-            bootstrap_ordinate_est=bootstrap_ordinate_est,
-            ordinate_var=ordinate_var,
-            bootstrap_fit=True,
-        )  # -> req. bootstrap_ordinate_var (bootstrap_ordinate_cov)
-    assert E.type is ValueError
-    with pytest.raises(ValueError) as E:
-        fit(
-            abscissa=abscissa,
-            bootstrap_ordinate_est=bootstrap_ordinate_est,
-            bootstrap_fit=True,
-        )  # -> req. bootstrap_ordinate_var (bootstrap_ordinate_cov)
-    assert E.type is ValueError
-
-    # tesing arguments for corr. bootstrap fit and uncorr. central value fit:
-    # 1. correct arguments should not raise
-    fit(
-        abscissa=abscissa,
-        ordinate_est=ordinate_est,
-        ordinate_var=ordinate_var,
-        bootstrap_ordinate_est=bootstrap_ordinate_est,
-        bootstrap_ordinate_cov=bootstrap_ordinate_cov,
-        bootstrap_fit=True,
-        bootstrap_fit_correlated=True,
-    )
-    # 2. partially wrong argumuments(covariance instead of variance for central value fit) should warn
-    fit(
-        abscissa=abscissa,
-        ordinate_est=ordinate_est,
-        ordinate_cov=ordinate_cov,
-        bootstrap_ordinate_est=bootstrap_ordinate_est,
-        bootstrap_ordinate_cov=bootstrap_ordinate_cov,
-        bootstrap_fit=True,
-        bootstrap_fit_correlated=True,
-    )
-    # 3. wrong arguments
-    with pytest.raises(ValueError) as E:
-        fit(
-            abscissa=abscissa,
-            bootstrap_ordinate_est=bootstrap_ordinate_est,
-            bootstrap_fit=True,
-            bootstrap_fit_correlated=True,
-        )  # -> req. bootstrap_ordinate_cov
-    assert E.type is ValueError
-
-    # testing arguments for uncorr. bootstrap fit and corr. central value fit:
-    # 1. correct arguments should not raise
-    fit(
-        abscissa=abscissa,
-        ordinate_est=ordinate_est,
-        ordinate_cov=ordinate_cov,
-        bootstrap_ordinate_est=bootstrap_ordinate_est,
-        bootstrap_ordinate_var=bootstrap_ordinate_var,
-        bootstrap_fit=True,
-        central_value_fit_correlated=True,
-    )
-    # 2. partially wrong argumuments(covariance instead of variance for central value fit) should warn
-    fit(
-        abscissa=abscissa,
-        ordinate_est=ordinate_est,
-        ordinate_cov=ordinate_cov,
-        bootstrap_ordinate_est=bootstrap_ordinate_est,
-        bootstrap_ordinate_cov=bootstrap_ordinate_cov,
-        bootstrap_fit=True,
-        central_value_fit_correlated=True,
-    )
-    # 3. wrong arguments
-    with pytest.raises(ValueError) as E:
-        fit(
-            abscissa=abscissa,
-            bootstrap_ordinate_est=bootstrap_ordinate_est,
-            bootstrap_fit=True,
-            central_value_fit_correlated=True,
-        )  # -> req. bootstrap_ordinate_var (bootstrap_ordinate_cov) and ordinate_cov
-    assert E.type is ValueError
-    with pytest.raises(ValueError) as E:
-        fit(
-            abscissa=abscissa,
-            bootstrap_ordinate_est=bootstrap_ordinate_est,
-            ordinate_cov=ordinate_cov,
-            bootstrap_fit=True,
-            central_value_fit_correlated=True,
-        )  # -> req. bootstrap_ordinate_var (bootstrap_ordinate_cov)
-    assert E.type is ValueError
-    with pytest.raises(ValueError) as E:
-        fit(
-            abscissa=abscissa,
-            bootstrap_ordinate_est=bootstrap_ordinate_est,
-            bootstrap_ordinate_var=bootstrap_ordinate_var,
-            bootstrap_fit=True,
-            central_value_fit_correlated=True,
-        )  # -> req. ordinate_cov
-    assert E.type is ValueError
-
-    # testing arguments for corr. bootstrap fit and corr. central value fit:
-    # 1. correct arguments should not raise
-    fit(
-        abscissa=abscissa,
-        ordinate_est=ordinate_est,
-        ordinate_cov=ordinate_cov,
-        bootstrap_ordinate_est=bootstrap_ordinate_est,
-        bootstrap_ordinate_cov=bootstrap_ordinate_cov,
-        central_value_fit_correlated=True,
-        bootstrap_fit=True,
-        bootstrap_fit_correlated=True,
-    )
-    fit(
-        abscissa=abscissa,
-        ordinate_est=ordinate_est,
-        ordinate_var=ordinate_var,
-        bootstrap_ordinate_est=bootstrap_ordinate_est,
-        bootstrap_ordinate_cov=bootstrap_ordinate_cov,
-        central_value_fit_correlated=True,
-        bootstrap_fit=True,
-        bootstrap_fit_correlated=True,
-    )
-    # 2. wrong arguments
-    with pytest.raises(ValueError) as E:
-        fit(
-            abscissa=abscissa,
-            ordinate_est=ordinate_est,
-            ordinate_cov=ordinate_cov,
-            bootstrap_ordinate_est=bootstrap_ordinate_est,
-            bootstrap_ordinate_var=bootstrap_ordinate_var,
-            central_value_fit_correlated=True,
-            bootstrap_fit=True,
-            bootstrap_fit_correlated=True,
-        )  # -> req. bootstrap_ordinate_cov
-    assert E.type is ValueError
-
-
-if __name__ == "__main__":
-    Nt = 16
-    Nbst = 100
-    Nconf = 100
-    # abscissa: np.ndarray = np.zeros(Nt)
-    # ordinate_est: np.ndarray[gv.GVar] = np.zeros(Nt,dtype=gv.GVar)
-    # ordinate_var: np.ndarray[gv.GVar] = np.zeros(Nt,dtype=gv.GVar)
-    # ordinate_cov: np.ndarray[gv.GVar] = np.zeros((Nt,Nt),dtype=gv.GVar)
-
-    # bootstrap_ordinate_est: np.ndarray[gv.GVar] = np.zeros((Nbst,Nt),dtype=gv.GVar)
-    # bootstrap_ordinate_var: np.ndarray[gv.GVar] = np.zeros((Nbst,Nt),dtype=gv.GVar)
-    # bootstrap_ordinate_cov: np.ndarray[gv.GVar] = np.zeros((Nbst,Nt,Nt),dtype=gv.GVar)
-
-    # fit(
-    #     abscissa = abscissa,
-    #     ordinate_est = ordinate_est,
-    #     bootstrap_ordinate_est=bootstrap_ordinate_est,
-    #     bootstrap_ordinate_cov=bootstrap_ordinate_cov
-    #     #ordinate_cov = ordinate_cov
-    # )
-    # test_defensive()
-
-    abscissa: np.ndarray = np.arange(0, Nt)
-    data: np.ndarray[gv.GVar] = gv.gvar(
-        np.exp(-0.2 * abscissa), 0.1 * np.exp(0.001 * abscissa)
-    )
-    data2 = np.random.normal(
-        np.exp(-0.2 * abscissa), 0.1 * np.exp(0.001 * abscissa), size=(Nconf, Nt)
-    )
-    data_bst = np.zeros((Nbst, Nt))
-    for nbst in range(Nbst):
-        data_bst[nbst] = np.mean(
-            data2[np.random.randint(0, Nconf, size=(Nconf,))], axis=0
-        )
-
-    # plt.errorbar(abscissa,gv.mean(data2[0]),gv.sdev(data2[0]),capsize=2)
-    # plt.yscale("log")
-    # plt.show()
-    # print(data_bst.mean(axis=0))
-    # print(data_bst.std(axis=0))
-
-    # #bootstrap fit:
-    # res =fit(
-    #     abscissa = abscissa,
-    #     bootstrap_ordinate_est=data_bst,
-    #     bootstrap_ordinate_cov=np.cov(data_bst,rowvar=False),
-    #     prior = {
-    #         "E0": gv.gvar(0.5,100), #flat prior
-    #         "A0": gv.gvar(0.5,100)
-    #     },
-    #     model= lambda t,p: p["A0"]*np.exp(-t*p["E0"]),
-    #     bootstrap_fit=True,
-    #     bootstrap_fit_resample_prior=False,
-    #     central_value_fit=False,
-    #     bootstrap_fit_correlated=True
-    # )
-
-    # # # uncorrelated central value fit:
-    # res = fit(
-    #     abscissa=abscissa,
-    #     ordinate_est=gv.mean(data),
-    #     ordinate_var=gv.var(data),
-    #     prior={"E0": gv.gvar(0.5, 100), "A0": gv.gvar(0.5, 100)},  # flat prior
-    #     model=lambda t, p: p["A0"] * np.exp(-t * p["E0"]),
-    # )
-
-    # bootrtrap and cental value fit:
-    res = fit(
-        abscissa=abscissa,
-        ordinate_est=gv.mean(data),
-        ordinate_var=gv.var(data),
-        bootstrap_ordinate_est=data_bst,
-        bootstrap_ordinate_cov=np.cov(data_bst, rowvar=False),
-        # prior = {
-        #     "E0": gv.gvar(0.5,100), #flat prior
-        #     "A0": gv.gvar(0.5,100)
-        # },
-        # p0={"E0": 0.5, "A0": 0.5},
-        prior={
-            "log(E0)": gv.log(gv.gvar(0.5, 100)),
-            "log(A0)": gv.log(gv.gvar(0.5, 100)),
-        },
-        model=lambda t, p: p["A0"] * np.exp(-t * p["E0"]),
-        bootstrap_fit=True,
-        bootstrap_fit_resample_prior=False,
-        bootstrap_fit_correlated=True,
-        central_value_fit=True,
-    )
-    # print(res.best_fit_param_bst)
-    # plt.errorbar(abscissa,gv.mean(data2[0]),gv.sdev(data2[0]),capsize=2)
-    # # # plt.plot(abscissa,gv.mean(data),gv.sdev(data))
-
-    # plt.plot(abscissa, gv.mean(res.best_fit_param['A0']) * np.exp(-abscissa * gv.mean(res.best_fit_param["E0"])))
-    # # plt.yscale("log")
-    # plt.show()
-    # # print dict res:
-    print(
-        res.best_fit_param_bst["E0"],
-        gv.mean(res.best_fit_param_bst["E0"]),
-        gv.sdev(res.best_fit_param["E0"]),
-    )
-    # for key, value in res.items():
-    #     print(f"{key}:{value}")
-    # # plt.show()
-
-# print(res.best_fit_param,res.best_fit_param_bst,res.AIC_bst)
