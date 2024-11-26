@@ -205,8 +205,6 @@ def fit(
     args["maxit"] = maxiter
 
     # populate the prior/start parameter
-    # on resamples, the prior mean may be resampled depending on
-    # use of prior and the resample_fit_resample_prior
     args["prior" if prior is not None else "p0"] = prior if prior is not None else p0
 
     # svdcut is optional
@@ -317,6 +315,25 @@ def fit(
     if not resample_fit:
         # return fit results
         return fit_result
+
+    # prepare the arguments for lsqfit
+    args = {}
+
+    # populate the fit function
+    args["fcn"] = model
+
+    # populate a maximal iteration for the minimizer
+    args["maxit"] = maxiter
+
+    # populate the prior/start parameter
+    # This may be resampled according to resample_fit_resample_prior
+    args["prior" if prior is not None else "p0"] = prior if prior is not None else p0
+
+    # svdcut is optional
+    if svdcut is not None:
+        args["svdcut"] = svdcut
+
+
 
     # prepare data for a resample fit
     for nres in range(Nres):
