@@ -124,9 +124,9 @@ class FitState:
                 #    This is in principle a very conservative estimate as it captures uncertainties on the model.
                 # This potentially overwrites the error above. This IS intended as by default the bootstrap uncertainty is 
                 # more reliable than the simple error propagation!
-                self.fit_results[0].resample_type == 'bst':
+                if self.fit_results[0].resample_type == 'bst':
                     self.param_avg["err"][key] = np.std(modelAvg_res,axis=0)
-                self.fit_results[0].resample_type == 'jkn':
+                elif self.fit_results[0].resample_type == 'jkn':
                     self.param_avg["err"][key] = ((Nres-1)/Nres) * np.std(modelAvg_res,axis=0)
                 # if no central value fit is done we simply compute the mean over bootstrap fits
                 # these two values are equal provided, same fitting strategy!

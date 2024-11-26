@@ -221,7 +221,7 @@ class FitResult:
                     self.fcn( 
                         abscissa, 
                         # reorder the parameters to access the result on the current resample
-                        { key: self.best_fit_param_res[key][nres] for key in param_keys } 
+                        { key: self.best_fit_param_res[key][nres] for key in self.best_fit_param_res.keys() } 
                     )
                 )
 
