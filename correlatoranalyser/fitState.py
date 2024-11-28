@@ -10,7 +10,7 @@ from pathlib import Path
 
 from typing import Self, List, Dict
 
-from .fitResult import FitResult
+from correlatoranalyser.fitResult import FitResult
 
 @dataclass
 class FitState:

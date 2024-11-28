@@ -288,7 +288,10 @@ class FitResult:
         fit_params = self.result_params()
         for key in fit_params['est'].keys():
             p = gv.gvar(fit_params['est'][key], fit_params['err'][key])
-            rep+= f"    - {key}: {p}  [{self.prior[key]}]\n"
+            rep+= f"    - {key}: {p}  \n"
+            if self.prior != None:
+                rep+= f"    - {key}: {p}  [{self.prior[key]}]\n"
+            #Problem if just p0 was set for the fit and no prior, then self.prior[key] is None and not subscriptable
 
         return rep
 
@@ -336,7 +339,7 @@ class FitResult:
                         f"{node}/{field.name}/{key}/err", data=gv.sdev(value)
                     )
 
-            elif isinstance(field_value, callable):
+            elif isinstance(field_value, Callable):
             # callable (e.g. self.fcn) are pickeld using dill.dumps
                 h5_handle.create_dataset(f"{node}/{field.name}", data = dumps(field_value,0) )
             
