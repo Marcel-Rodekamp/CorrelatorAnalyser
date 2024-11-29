@@ -9,7 +9,7 @@ from .fitmodels import (
     SimpleSumOfExponentialsP0,
 )
 
-from .plotting.plotting_new import DataPlotter
+from .plotting.plotting_new import plot_best_fits
 
 Nt = 16
 Nbst = 100
@@ -157,16 +157,18 @@ for i, fit in enumerate(res.fit_results):
 #=======================================
 # Test Plotting:
 #=======================================
-# print("test",type(res.fit_results[0].te))#.fit_results[0].te)
+# old:
+# plots = DataPlotter(data_complete=res)
+# fig,ax = DataPlotter.plotTopFits(plots,C= data,no_fits=5)
 
-plots = DataPlotter(data_complete=res)
-# print("test2",type(plots.data_complete.fit_results[0].te))
-# print(plots)
+#new:
+#multidim:
+# plot = plot_best_fits(fit_state=res,C=np.stack((data,data),axis=0))
+#one-dim:
+plot = plot_best_fits(fit_state=res,C=data)
+# plt.savefig('./Report/plotTopFits.png', dpi=300)
 
-fig,ax = DataPlotter.plotTopFits(plots,no_fits=5)
-plt.savefig('./Report/plotTopFits.png', dpi=300)
-
-
+# print(data[None,:])
 
 
 def sum_ordered_exp(t: np.ndarray, p: gv.BufferDict, Nstates: int) -> np.ndarray:
