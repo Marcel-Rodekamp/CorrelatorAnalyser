@@ -3,13 +3,50 @@ import gvar as gv
 from .fitState import FitState
 from .fit import fit
 import matplotlib.pyplot as plt
-from .fitmodels import (
-    SimpleSumOfExponentialsModel,
-    SimpleSumOfExponentialsFlatPrior,
-    SimpleSumOfExponentialsP0,
-)
+# from .fitmodels import (
+#     SimpleSumOfExponentialsModel,
+#     SimpleSumOfExponentialsFlatPrior,
+#     SimpleSumOfExponentialsP0,
+# )
 
 from .plotting.plotting_new import plot_best_fits
+
+#======================================================================================================
+# Fit Model:
+# C(t) = A0 * exp(-t E0) + ... + An * exp(-t (E0+..+ΔEn))
+# with ΔE_n = E_n - E_{n-1}  =>  E_n = E_{n-1} + ΔE_n
+#
+class MultiState:
+    def __init__(self, Nstates):
+        self.Nstates = Nstates
+        self.Nparam = 2 * Nstates
+
+    def prior(self):
+        #ToDO
+
+        p = gv.BufferDict()
+
+        p["A0"] = gv.gvar(1e-9, 1e-8)
+        p["log(E0)"] = gv.log(gv.gvar(1,10))
+        
+        for n in range(1,self.Nstates):
+            p[f"A{n}"] = gv.gvar(1e-9, 1e-8)
+            p[f"log(ΔE{n})"] = gv.log(gv.gvar(1,10))
+
+        return p
+    
+    def __call__(self, t:np.ndarray, p:gv.BufferDict) -> np.ndarray:
+        E = p["E0"]
+        out = p[f"A{0}"] * np.exp( -t*E )
+        
+        for n in range(1,self.Nstates):
+            #    ΔE_n = E_n - E_{n-1}
+            # =>  E_n = E_{n-1} + ΔE_n
+            E += p[f"ΔE{n}"]
+            out += p[f"A{n}"] * np.exp( -t*E )
+
+        return out
+#=======================================================================================================
 
 Nt = 16
 Nbst = 100
@@ -31,35 +68,36 @@ data: np.ndarray[gv.GVar] = gv.gvar(
 )
 data2 = np.random.normal(
     np.exp(-0.2 * abscissa),  # + 0.1 * np.exp(-0.35 * abscissa),
-    0.01 * np.exp(0.1 * abscissa),
+    0.01 * np.exp(0.01 * abscissa),
     size=(Nconf, Nt),
 )
 data_bst = np.zeros((Nbst, Nt))
 for nbst in range(Nbst):
     data_bst[nbst] = np.mean(data2[np.random.randint(0, Nconf, size=(Nconf,))], axis=0)
 
-plt.plot(abscissa, gv.mean(data), marker=".", ls="", color="b")
-# for nbst in range(Nbst):
-#     plt.plot(abscissa,gv.mean(data2[nbst]),marker="x",ls='')
 
-# plt.errorbar(x=abscissa,y=gv.mean(data2[0]),yerr=gv.sdev(data2[0]),linestyle='')
-# plt.plot(abscissa, 1*np.exp(-abscissa*0.2)+0.1*np.exp(-0.35*abscissa))
-# plt.show()
+# plt.plot(abscissa, gv.mean(data), marker=".", ls="", color="b")
+for nbst in range(Nbst):
+    plt.plot(abscissa,gv.mean(data_bst[nbst]),marker="x",ls='')
+
+# plt.errorbar(x=abscissa,y=gv.mean(data),yerr=gv.sdev(data2[0]),linestyle='')
+plt.plot(abscissa, 1*np.exp(-abscissa*0.2))
+plt.savefig("./Report/initial_data.png")
+
 res = FitState()
 te = abscissa[-1]
-for ns in range(1, num_states + 1):
-    model = SimpleSumOfExponentialsModel(
-        Nstates=ns
-    )  # lambda t, p: p["A0"] * np.exp(-t * p["E0"])
-    print(model)
-    # ToDo: refresh priors
-    # prior_new = SimpleSumOfExponentialsFlatPrior(Nstates=ns)()
-    p0_new = SimpleSumOfExponentialsP0(Nstates=ns)()
 
-    # prior_new = {"E0": gv.gvar(0.5,100), #flat prior
-    #                 "A0": gv.gvar(0.5,100),
-    #             "E1": gv.gvar(0.5,100), #flat prior
-    #                 "A1": gv.gvar(0.5,100)}
+#Do fits for all different nstates:
+for ns in range(1, num_states + 1):
+    # model = SimpleSumOfExponentialsModel(
+    #     Nstates=ns
+    # )  # lambda t, p: p["A0"] * np.exp(-t * p["E0"])
+    # prior_new = SimpleSumOfExponentialsFlatPrior(Nstates=ns)()
+    # p0_new = SimpleSumOfExponentialsP0(Nstates=ns)()
+    model = MultiState(Nstates=ns)
+    # ToDo: refresh priors
+    prior = model.prior()
+
     for ts in np.arange(0, te - 2 * ns - 2):
         print(f"...Fitting {ns} states, timeframe: [{ts},{te}]")
         update = fit(
@@ -68,26 +106,27 @@ for ns in range(1, num_states + 1):
             ordinate_std=gv.var(data[ts:te]),
             resample_ordinate_est=data_bst[:, ts:te],
             resample_ordinate_std=np.cov(data_bst[:, ts:te], rowvar=False),
-            # prior=prior_new,
+            prior=prior,
             # p0={"E0": 0.5, "A0": 0.5},
             model=model,
-            p0=p0_new,
-            # bootstrap_fit=True,
+            # p0=p0_new,
+            # resample_fit = True,
+            resample_type='bst'
             # bootstrap_fit_resample_prior=False,
-            resample_fit_correlated=True,
+            # resample_fit_correlated=True
             # central_value_fit=False,
         )
-        """Make sure that A0>A1>...>An s.t. over the same parameter is averaged"""
-        print("Before sorting:", update.best_fit_param)
-        pairs = [
-            (update.best_fit_param[f"E{i}"], update.best_fit_param[f"A{i}"])
-            for i in range(ns)
-        ]
-        sorted_pairs = sorted(pairs, key=lambda x: gv.mean(x[0]), reverse=False)
-        for i, (E, A) in enumerate(sorted_pairs):
-            update.best_fit_param[f"E{i}"] = E
-            update.best_fit_param[f"A{i}"] = A
-        print("After sorting:", update.best_fit_param)
+        # """Make sure that A0>A1>...>An s.t. over the same parameter is averaged"""
+        # print("Before sorting:", update.best_fit_param)
+        # pairs = [
+        #     (update.best_fit_param[f"E{i}"], update.best_fit_param[f"A{i}"])
+        #     for i in range(ns)
+        # ]
+        # sorted_pairs = sorted(pairs, key=lambda x: gv.mean(x[0]), reverse=False)
+        # for i, (E, A) in enumerate(sorted_pairs):
+        #     update.best_fit_param[f"E{i}"] = E
+        #     update.best_fit_param[f"A{i}"] = A
+        # print("After sorting:", update.best_fit_param)
 
         # print(update.best_fit_param_bst)
         res.append(update)
@@ -103,8 +142,8 @@ for ns in range(1, num_states + 1):
         # print(f"after averaging:{res.param_avg}")
 
 import h5py
-with h5py.File("./Report/FitResult.h5", "w") as h5f:
-            res.serialize_all(h5_file=h5f)
+# with h5py.File("./Report/FitResult.h5", "w") as h5f:
+#             res.serialize_all(h5_file=h5f)
 
 # res.serialize_all(h5file=h5py.File("../Report/TestData.h5", "w"))
 
@@ -120,14 +159,14 @@ with h5py.File("./Report/FitResult.h5", "w") as h5f:
 #     print(f"{key}_bst: {value}")
 #     averaged_param[key]=gv.mean(value)
 
-print("Top 5 Fit Results:")
-for i, fit in enumerate(res.fit_results):
-    if i > 4:
-        pass
-    else:
-        print(
-            f"Fit {i+1}: range[{fit.ts},{fit.te}] with parameters {fit.best_fit_param} (cv)  and AIC {fit.AIC}\n"
-        )
+# print("Top 5 Fit Results:")
+# for i, fit in enumerate(res.fit_results):
+#     if i > 4:
+#         pass
+#     else:
+#         print(
+#             f"Fit {i+1}: range[{fit.ts},{fit.te}] with parameters {fit.best_fit_param} (cv)  and AIC {fit.AIC}\n"
+#         )
 # print(res)
 
 # plt.plot(
@@ -165,37 +204,11 @@ for i, fit in enumerate(res.fit_results):
 #multidim:
 # plot = plot_best_fits(fit_state=res,C=np.stack((data,data),axis=0))
 #one-dim:
-plot = plot_best_fits(fit_state=res,C=data)
+plot = plot_best_fits(fit_state=res,num_fits=3,C=data)
+print(res.fit_results[0].best_fit_param, res.fit_results[0].best_fit_param)
 # plt.savefig('./Report/plotTopFits.png', dpi=300)
 
 # print(data[None,:])
 
 
-def sum_ordered_exp(t: np.ndarray, p: gv.BufferDict, Nstates: int) -> np.ndarray:
-    r"""
-    @param t:np.ndarray[t_start:t_end,dtype=float] time slices a*\tau (abscissa)
-    @param p:{"A{n}":gv.gvar, "ΔE{n}":gv.gvar} parameters of the model, i.e. overlaps A_n and energies E_n for n = 1,...,N_{states}
-
-    A simple set of exponentials that are summed:
-
-    f(t) = \sum_n A_n exp(-t*E_n)
-    but with
-        E_n = E_{n-1} + ΔE_n
-    and
-        ΔE_n > 0
-    except
-        E_0
-    """
-
-    E = p["E0"]
-    out = p[f"A{0}"] * np.exp(-t * E)
-
-    for n in range(1, Nstates):
-        #    ΔE_n = E_n - E_{n-1}
-        # =>  E_n = E_{n-1} + ΔE_n
-        E += p[f"ΔE{n}"]
-
-        out += p[f"A{n}"] * np.exp(-t * E)
-
-    return out
 

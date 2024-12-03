@@ -5,15 +5,27 @@ from ..fitState import FitState
 # from typing import Self, List, Dict
 import gvar as gv
 
-
+#=========================================================================================================
+#
 def plot_best_fits(
         *,
         fit_state: FitState,
         C: np.ndarray[gv.GVar],
         C_dim: int = None, #option to specify which dimension of the corelator should be plotted (in case of multidim. correlators)
-        num_fits: int = 5
+        num_fits: int = 5,
+        title: str = "Best fits"
         )-> tuple[plt.Figure,plt.Axes]:
-
+    r"""!
+        Function to plot the raw correlator data and the best fit results. For multidimensional correlator data
+        the dimesion is specified with C_dim. Also the number of fits to plot can be changed (default 5) and the title.
+        The function uses the matplotlib libary and return the Figure and Axes of the plot and the figure is saved in the
+        Report folder.
+        @param fit_state: FitState object which contains the fit results
+        @param C : (multidim.) arrray containing the raw data of the correlator for the fit
+        @param C_dim: specify which dimension should be plotted for multidimensional correlator data
+        @param num_fits: to choose the number of fits default 5)
+        @param title: choose a title for the plot 
+    """
 
     #check if Correlator data is multidimensional
     if C.ndim >1:
@@ -37,7 +49,6 @@ def plot_best_fits(
     )
     # top_fits = [[[], []] for _ in range(num_fits)]
     for i,fit in enumerate(fit_state.fit_results):
-        print(i)
         if i< num_fits:
             abscissa = np.arange(fit.ts,fit.te)
             ordinate = fit.eval(abscissa)
@@ -61,7 +72,7 @@ def plot_best_fits(
     axs.set_xlabel(r"$\tau/a$",fontsize=18)
     axs.tick_params(axis="x", labelsize=12)
     axs.tick_params(axis="y", labelsize=12)
-    # axs.set_title(rf"$\vec{{p}} = {p}$")
+    axs.set_title(title)
     axs.legend(fontsize=18)
     axs.set_yscale('log')
     axs.grid(True, which='major', color='gray', linestyle='-', linewidth=0.8)
@@ -76,6 +87,9 @@ def plot_best_fits(
     return fig, axs
 
             
+
+#========================================================================================================
+#            
 def plot_fit_overview(
     fit_state:FitState    
     )-> tuple[plt.Figure,plt.Axes]:
