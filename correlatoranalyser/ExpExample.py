@@ -66,14 +66,14 @@ abscissa: np.ndarray = np.arange(0, Nt)
 data: np.ndarray[gv.GVar] = gv.gvar(
     np.random.normal(
         np.exp(-0.2 * abscissa),  # + 0.1 * np.exp(-0.35 * abscissa),
-        0.1 * np.exp(0.1 * abscissa),
+        0.01 * np.exp(0.1 * abscissa),
         size=(Nt),
     ),
     0.05 * np.exp(0.1 * abscissa),
 )
 data2 = np.random.normal(
     np.exp(-0.2 * abscissa),  # + 0.1 * np.exp(-0.35 * abscissa),
-    0.1 * np.exp(0.1 * abscissa),
+    0.01 * np.exp(0.1 * abscissa),
     size=(Nconf, Nt),
 )
 data_bst = np.zeros((Nbst, Nt))
@@ -87,7 +87,8 @@ for nbst in range(Nbst):
 
 # plt.errorbar(x=abscissa,y=gv.mean(data),yerr=gv.sdev(data2[0]),linestyle='')
 plt.plot(abscissa, 1 * np.exp(-abscissa * 0.2))
-plt.savefig("./Report/initial_data.png")
+plt.yscale("log")
+plt.savefig("./Report/test/initial_data.png")
 
 res = FitState()
 te = abscissa[-1]
@@ -114,11 +115,11 @@ for ns in range(1, num_states + 1):
             # p0={"E0": 0.5, "A0": 0.5},
             model=model,
             # p0=p0_new,
-            resample_fit=True,
+            # resample_fit=True,
             resample_type="bst",
             # bootstrap_fit_resample_prior=False,
             # resample_fit_correlated=True
-            central_value_fit=False,
+            # central_value_fit=False,
         )
         # """Make sure that A0>A1>...>An s.t. over the same parameter is averaged"""
         # print("Before sorting:", update.best_fit_param)
@@ -162,7 +163,8 @@ if res.fit_results[0].best_fit_param is not None:
     )
     plt.plot(x_fine, y_data, label="CV")
     plt.legend()
-    plt.savefig("./Report/CV_Fit.png", dpi=300)
+    plt.yscale("log")
+    plt.savefig("./Report/test/CV_Fit.png", dpi=300)
     # plt.show()
 
 
@@ -199,13 +201,15 @@ if res.fit_results[0].Nres is not None:  # check if resample fit
     )
     # y_data += np.mean(res.param_avg['res']['A1'])*np.exp(-x_fine*(np.mean(res.param_avg['res']['E0'])+np.mean(res.param_avg['res']['ΔE1'])))
     plt.plot(x_fine, y_data, ls="-", label="mean")
+    plt.yscale("log")
     plt.legend()
-    plt.savefig("./Report/Res_Fit.png", dpi=300)
+    plt.savefig("./Report/test/Res_Fit.png", dpi=300)
     plt.figure()
     plt.plot(x_fine, y_data, ls="-", label="mean of bst model avg")
     plt.plot(x_fine, 1 * np.exp(-x_fine * 0.2), label="'True' data")
     plt.legend()
-    plt.savefig("./Report/Res_Mean.png", dpi=300)
+    plt.yscale("log")
+    plt.savefig("./Report/test/Res_Mean.png", dpi=300)
 
 
 # ===========================================================================================================================================================================================
@@ -273,6 +277,7 @@ if res.fit_results[0].Nres is not None:  # check if resample fit
 # #one-dim:
 
 
-# plot = plot_best_fits(fit_state=res,num_fits=3,C=data)
-# print(res.fit_results[0].best_fit_param, res.fit_results[0].best_fit_param)
+plot_fig, plot_ax = plot_best_fits(fit_state=res, num_fits=6, C=data)
+# costumization of the fit can be done further:
+# plot_ax.set_title("test")
 # plt.savefig('./Report/plotTopFits.png', dpi=300)
