@@ -165,7 +165,7 @@ def fit(
                     raise ValueError(f"Expecting resample_ordinate_std of shape (Nres,N, ...) or (N, ...) but has {resample_ordinate_std.shape}")
 
         # resample_ordinate_cov is optional
-        if resample_ordinate_std is not None:
+        if resample_ordinate_cov is not None:
             # We expect resample_ordinate_cov by dimensions
             # 1. (Nbst, N, N), i.e. one uncertainty per resample
             # 2. (N, N), i.e. one uncertainty for all resamples (frozen)
