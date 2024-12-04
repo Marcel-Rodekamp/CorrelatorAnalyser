@@ -146,7 +146,10 @@ class FitResult:
                 +f"but got {key}"        
             )
 
-        result_params_dict = { "est": gv.mean( self.best_fit_param ) }
+        if self.has_central_value():
+            result_params_dict = { "est": gv.mean( self.best_fit_param ) }
+        else:
+            result_params_dict = {}
 
         if self.has_resamples():
             result_params_dict["res"] = self.best_fit_param_res
@@ -158,7 +161,7 @@ class FitResult:
                             gv.mean(self.best_fit_param_res[key]), 
                             axis = 0
                          ) 
-                    for key in self.best_fit_param.keys()  
+                    for key in self.best_fit_param_res.keys()  
                 }
             elif self.resample_type == 'jkn': 
                 result_params_dict["err"] = {
@@ -166,11 +169,19 @@ class FitResult:
                             gv.mean(self.best_fit_param_res[key]), 
                             axis = 0
                          ) 
-                    for key in self.best_fit_param.keys()  
+                    for key in self.best_fit_param_res.keys()  
                 }
             else:
                 # this case is checked in __post_init__
                 pass
+            result_params_dict["est"] = {
+                    key: np.mean(
+                        gv.mean(self.best_fit_param_res[key]), 
+                        axis = 0
+                    ) 
+                    for key in self.best_fit_param_res.keys()  
+                }
+
         else:
             # For non-resampled fits we can use Gaussian error-propagation implemented via gvar
             # This also includes correlation as estimated
@@ -208,13 +219,13 @@ class FitResult:
         # "err": std confidence band either through bootstrap or Gaussian error-propagation
         # "res": fit result per bootstrap 
         out: dict = {}
-
-        gvar_eval: np.ndarray = self.fcn( abscissa, self.best_fit_param )
-
-        out["est"]: np.ndarray = gv.mean(gvar_eval)
+        
+        if self.has_central_value():
+            gvar_eval: np.ndarray = self.fcn( abscissa, self.best_fit_param )
+            out["est"]: np.ndarray = gv.mean(gvar_eval)
 
         if self.has_resamples():
-            out["res"]:np.ndarray = np.zeros( (self.Nres, *out['est'].shape ), dtype = out['est'].dtype )
+            out["res"]:np.ndarray = np.zeros( (self.Nres, len(abscissa) ) )
 
             for nres in range(self.Nres):
                 out["res"][nres] = gv.mean( # self.fcn return array of gvars, we take the central values
@@ -233,6 +244,10 @@ class FitResult:
             else:
                 # this case is checked in __post_init__
                 pass
+
+            if not self.has_central_value():
+                out["est"]: np.ndarray = np.mean(out["res"], axis = 0) 
+
         else:
             # For non-resampled fits we can use Gaussian error-propagation implemented via gvar
             # This also includes correlation as estimated
@@ -288,10 +303,11 @@ class FitResult:
         fit_params = self.result_params()
         for key in fit_params['est'].keys():
             p = gv.gvar(fit_params['est'][key], fit_params['err'][key])
-            rep+= f"    - {key}: {p}  \n"
-            if self.prior != None:
+            if self.has_central_value():
                 rep+= f"    - {key}: {p}  [{self.prior[key]}]\n"
-            #Problem if just p0 was set for the fit and no prior, then self.prior[key] is None and not subscriptable
+            else:
+                # Every bootstrap has it's own prior, we can't plot all of them here, hence we neglect this information
+                rep+= f"    - {key}: {p}  \n"
 
         return rep
 
@@ -339,7 +355,7 @@ class FitResult:
                         f"{node}/{field.name}/{key}/err", data=gv.sdev(value)
                     )
 
-            elif isinstance(field_value, Callable):
+            elif isinstance(field_value, callable):
             # callable (e.g. self.fcn) are pickeld using dill.dumps
                 h5_handle.create_dataset(f"{node}/{field.name}", data = dumps(field_value,0) )
             
@@ -589,4 +605,3 @@ class FitResult:
             self.prior      = nlf.prior
 
 # end of class: FitResult 
-

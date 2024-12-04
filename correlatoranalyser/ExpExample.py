@@ -110,11 +110,11 @@ for ns in range(1, num_states + 1):
             # p0={"E0": 0.5, "A0": 0.5},
             model=model,
             # p0=p0_new,
-            # resample_fit = True,
-            resample_type='bst'
+            resample_fit = True,
+            resample_type='bst',
             # bootstrap_fit_resample_prior=False,
             # resample_fit_correlated=True
-            # central_value_fit=False,
+            central_value_fit=False,
         )
         # """Make sure that A0>A1>...>An s.t. over the same parameter is averaged"""
         # print("Before sorting:", update.best_fit_param)
