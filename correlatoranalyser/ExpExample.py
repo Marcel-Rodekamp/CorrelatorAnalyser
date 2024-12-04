@@ -3,15 +3,16 @@ import gvar as gv
 from .fitState import FitState
 from .fit import fit
 import matplotlib.pyplot as plt
-# from .fitmodels import (
-#     SimpleSumOfExponentialsModel,
-#     SimpleSumOfExponentialsFlatPrior,
-#     SimpleSumOfExponentialsP0,
-# )
+from .fitmodels import (
+    SimpleSumOfExponentialsModel,
+    SimpleSumOfExponentialsFlatPrior,
+    SimpleSumOfExponentialsP0,
+)
 
 from .plotting.plotting_new import plot_best_fits
 
-#======================================================================================================
+
+# ======================================================================================================
 # Fit Model:
 # C(t) = A0 * exp(-t E0) + ... + An * exp(-t (E0+..+ΔEn))
 # with ΔE_n = E_n - E_{n-1}  =>  E_n = E_{n-1} + ΔE_n
@@ -22,35 +23,39 @@ class MultiState:
         self.Nparam = 2 * Nstates
 
     def prior(self):
-        #ToDO
+        # ToDO
 
         p = gv.BufferDict()
 
-        p["A0"] = gv.gvar(1e-9, 1e-8)
-        p["log(E0)"] = gv.log(gv.gvar(1,10))
-        
-        for n in range(1,self.Nstates):
-            p[f"A{n}"] = gv.gvar(1e-9, 1e-8)
-            p[f"log(ΔE{n})"] = gv.log(gv.gvar(1,10))
+        # p["A0"] = gv.gvar(1e-9, 1e-8)
+        p["A0"] = gv.gvar(0.5, 10)
+        p["log(E0)"] = gv.log(gv.gvar(1, 10))
+
+        for n in range(1, self.Nstates):
+            p[f"A{n}"] = gv.gvar(0.5, 10)
+            # p[f"A{n}"] = gv.gvar(1e-9, 1e-8)
+            p[f"log(ΔE{n})"] = gv.log(gv.gvar(1, 10))
 
         return p
-    
-    def __call__(self, t:np.ndarray, p:gv.BufferDict) -> np.ndarray:
+
+    def __call__(self, t: np.ndarray, p: gv.BufferDict) -> np.ndarray:
         E = p["E0"]
-        out = p[f"A{0}"] * np.exp( -t*E )
-        
-        for n in range(1,self.Nstates):
+        out = p[f"A{0}"] * np.exp(-t * E)
+
+        for n in range(1, self.Nstates):
             #    ΔE_n = E_n - E_{n-1}
             # =>  E_n = E_{n-1} + ΔE_n
             E += p[f"ΔE{n}"]
-            out += p[f"A{n}"] * np.exp( -t*E )
+            out += p[f"A{n}"] * np.exp(-t * E)
 
         return out
-#=======================================================================================================
+
+
+# =======================================================================================================
 
 Nt = 16
-Nbst = 100
-Nconf = 100
+Nbst = 200
+Nconf = 200
 num_states = 2  # number of states
 abscissa: np.ndarray = np.arange(0, Nt)
 # data: np.ndarray[gv.GVar] = gv.gvar(
@@ -61,14 +66,14 @@ abscissa: np.ndarray = np.arange(0, Nt)
 data: np.ndarray[gv.GVar] = gv.gvar(
     np.random.normal(
         np.exp(-0.2 * abscissa),  # + 0.1 * np.exp(-0.35 * abscissa),
-        0.01 * np.exp(0.01 * abscissa),
+        0.1 * np.exp(0.1 * abscissa),
         size=(Nt),
     ),
     0.05 * np.exp(0.1 * abscissa),
 )
 data2 = np.random.normal(
     np.exp(-0.2 * abscissa),  # + 0.1 * np.exp(-0.35 * abscissa),
-    0.01 * np.exp(0.01 * abscissa),
+    0.1 * np.exp(0.1 * abscissa),
     size=(Nconf, Nt),
 )
 data_bst = np.zeros((Nbst, Nt))
@@ -76,28 +81,27 @@ for nbst in range(Nbst):
     data_bst[nbst] = np.mean(data2[np.random.randint(0, Nconf, size=(Nconf,))], axis=0)
 
 
-# plt.plot(abscissa, gv.mean(data), marker=".", ls="", color="b")
+plt.plot(abscissa, gv.mean(data), marker=".", ls="", color="b")
 for nbst in range(Nbst):
-    plt.plot(abscissa,gv.mean(data_bst[nbst]),marker="x",ls='')
+    plt.plot(abscissa, gv.mean(data_bst[nbst]), marker="x", ls="")
 
 # plt.errorbar(x=abscissa,y=gv.mean(data),yerr=gv.sdev(data2[0]),linestyle='')
-plt.plot(abscissa, 1*np.exp(-abscissa*0.2))
+plt.plot(abscissa, 1 * np.exp(-abscissa * 0.2))
 plt.savefig("./Report/initial_data.png")
 
 res = FitState()
 te = abscissa[-1]
 
-#Do fits for all different nstates:
+# Do fits for all different nstates:
 for ns in range(1, num_states + 1):
     # model = SimpleSumOfExponentialsModel(
     #     Nstates=ns
     # )  # lambda t, p: p["A0"] * np.exp(-t * p["E0"])
-    # prior_new = SimpleSumOfExponentialsFlatPrior(Nstates=ns)()
+    # prior = SimpleSumOfExponentialsFlatPrior(Nstates=ns)()
     # p0_new = SimpleSumOfExponentialsP0(Nstates=ns)()
     model = MultiState(Nstates=ns)
-    # ToDo: refresh priors
     prior = model.prior()
-
+    # ToDo: refresh priors
     for ts in np.arange(0, te - 2 * ns - 2):
         print(f"...Fitting {ns} states, timeframe: [{ts},{te}]")
         update = fit(
@@ -110,8 +114,8 @@ for ns in range(1, num_states + 1):
             # p0={"E0": 0.5, "A0": 0.5},
             model=model,
             # p0=p0_new,
-            resample_fit = True,
-            resample_type='bst',
+            resample_fit=True,
+            resample_type="bst",
             # bootstrap_fit_resample_prior=False,
             # resample_fit_correlated=True
             central_value_fit=False,
@@ -142,6 +146,69 @@ for ns in range(1, num_states + 1):
         # print(f"after averaging:{res.param_avg}")
 
 import h5py
+
+# =========================================================================================================================================================================================
+# Testing the fit
+if res.fit_results[0].best_fit_param is not None:
+    print("Parameters from the model average (CV):", res.param_avg)
+    for fit in res.fit_results:
+        print("Chi2/dof:", fit.chi2 / fit.dof)
+
+    x_fine = np.arange(0, Nt, step=0.2)
+    y_data = res.param_avg["est"]["A0"] * np.exp(-x_fine * res.param_avg["est"]["E0"])
+    # y_data = res.param_avg['est']['A1']*np.exp(-x_fine*res.param_avg['est']['E1'])
+    y_data += res.param_avg["est"]["A1"] * np.exp(
+        -x_fine * (res.param_avg["est"]["E0"] + res.param_avg["est"]["ΔE1"])
+    )
+    plt.plot(x_fine, y_data, label="CV")
+    plt.legend()
+    plt.savefig("./Report/CV_Fit.png", dpi=300)
+    # plt.show()
+
+
+# check chi2 of resample fit:
+if res.fit_results[0].Nres is not None:  # check if redsample fit
+    bad_fits = 0
+    for i, fit in enumerate(res.fit_results):
+        # print(fit.chi2_res[0])
+        # print(fit.dof)
+        for nbst in np.arange(0, Nbst):
+            if fit.chi2_res[nbst] / fit.dof > 10:
+                if (fit.te - fit.ts) > 10:
+                    print(
+                        f"Fit no {i} nbst {nbst} with {fit.ts}, {fit.te} dof: {fit.dof} chi2/dof: {fit.chi2_res[nbst]/fit.dof}"
+                    )
+                    bad_fits += 1
+    print(f"No. of fits with chi2/dof >10: {bad_fits} of {nbst*len(res.fit_results)}")
+
+if res.fit_results[0].Nres is not None:  # check if resample fit
+    # print(res.param_avg)
+    x_fine = np.arange(0, Nt, step=0.2)
+    for nbst in np.arange(Nbst):  # res.param_avg['res']:
+        # print(param, np.mean(res.param_avg['res'][param]))
+        y_data = res.param_avg["res"]["A0"][nbst] * np.exp(
+            -x_fine * res.param_avg["res"]["E0"][nbst]
+        )
+        y_data += res.param_avg["res"]["A1"][nbst] * np.exp(
+            -x_fine
+            * (res.param_avg["res"]["E0"][nbst] + res.param_avg["res"]["ΔE1"][nbst])
+        )
+        plt.plot(x_fine, y_data, ls="--")
+    y_data = np.mean(res.param_avg["res"]["A0"]) * np.exp(
+        -x_fine * np.mean(res.param_avg["res"]["E0"])
+    )
+    # y_data += np.mean(res.param_avg['res']['A1'])*np.exp(-x_fine*(np.mean(res.param_avg['res']['E0'])+np.mean(res.param_avg['res']['ΔE1'])))
+    plt.plot(x_fine, y_data, ls="-", label="mean")
+    plt.legend()
+    plt.savefig("./Report/Res_Fit.png", dpi=300)
+    plt.figure()
+    plt.plot(x_fine, y_data, ls="-", label="mean of bst model avg")
+    plt.plot(x_fine, 1 * np.exp(-x_fine * 0.2), label="'True' data")
+    plt.legend()
+    plt.savefig("./Report/Res_Mean.png", dpi=300)
+
+
+# ===========================================================================================================================================================================================
 # with h5py.File("./Report/FitResult.h5", "w") as h5f:
 #             res.serialize_all(h5_file=h5f)
 
@@ -193,22 +260,19 @@ import h5py
 # plt.show()
 
 
-#=======================================
+# =======================================
 # Test Plotting:
-#=======================================
+# =======================================
 # old:
 # plots = DataPlotter(data_complete=res)
 # fig,ax = DataPlotter.plotTopFits(plots,C= data,no_fits=5)
 
-#new:
-#multidim:
+# new:
+# multidim:
 # plot = plot_best_fits(fit_state=res,C=np.stack((data,data),axis=0))
-#one-dim:
-plot = plot_best_fits(fit_state=res,num_fits=3,C=data)
-print(res.fit_results[0].best_fit_param, res.fit_results[0].best_fit_param)
+# #one-dim:
+
+
+# plot = plot_best_fits(fit_state=res,num_fits=3,C=data)
+# print(res.fit_results[0].best_fit_param, res.fit_results[0].best_fit_param)
 # plt.savefig('./Report/plotTopFits.png', dpi=300)
-
-# print(data[None,:])
-
-
-
