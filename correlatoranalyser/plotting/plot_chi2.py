@@ -176,7 +176,7 @@ def plot_chi2(
     )
 
     cbar = fig.colorbar(cntr1, ax=contour_axs, orientation='horizontal', pad=0.15)
-    cbar.set_label(r"$\chi^2 / \mathrm{dof}$")
+    cbar.set_label(rf"$\chi^2 / \mathrm{{dof}}~[{dof}]$")
     
     contour_axs.set_xlabel(param_keys[0])
     contour_axs.set_ylabel(param_keys[1])
