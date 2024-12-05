@@ -91,6 +91,84 @@ def plot_best_fits(
 
 # ========================================================================================================
 #
+def plot_best_fits_resample_mean(
+    *,
+    fit_state: FitState,
+    C: np.ndarray[gv.GVar],
+    C_dim: int = None,  # option to specify which dimension of the corelator should be plotted (in case of multidim. correlators)
+    num_fits: int = 5,
+) -> tuple[plt.Figure, plt.Axes]:
+    r"""!
+    Plots best fit results of the resample fit (take mean of the best fit prameters over all bootstraps)
+    """
+    # check if given FitState has data from central value fit:
+    if fit_state.fit_results[0].chi2_res is None:
+        raise ValueError(
+            f"The given fit_state contains no fit results of a resampled fit."
+        )
+    # check if Correlator data is multidimensional
+    if C.ndim > 1:
+        if C_dim is None:
+            raise ValueError(
+                f"The Correlator is multidimensional, but no C_dim is specified."
+            )
+
+    dim = np.shape(C)[0]
+    # ToDo: warning if no C_dim set, but C multidim
+    fig, axs = plt.subplots(1, 1, figsize=(20, 7))
+
+    if C_dim is None:
+        abscissa = np.arange(len(C))
+    else:
+        abscissa = np.arange(len(C[C_dim]))
+    # plot the correlator and its error
+    axs.errorbar(
+        x=abscissa, y=gv.mean(C), yerr=gv.sdev(C), capsize=4, label="Correlator data"
+    )
+    # top_fits = [[[], []] for _ in range(num_fits)]
+    for i, fit in enumerate(fit_state.fit_results):
+        if i < num_fits:
+            abscissa = np.arange(fit.ts, fit.te)
+            ordinate = fit.eval(abscissa)
+            label= "test"#rf"mean(\text{{AIC}}) = {np.mean(fit.AIC):g} "
+            # try:
+            #     nstates = fit.fcn.Nstates
+            #     label=rf"$N_\text{{states}}={nstates}, ({abscissa[0]},{abscissa[-1]}) "
+            #     rf"\chi^2/_\mathrm{{dof}}~[\mathrm{{dof}}] = {fit.chi2_res/fit.dof:g}~[{fit.dof:g}], "
+            #     rf"mean(\text{{AIC}}) = {np.mean(fit.AIC):g} $"
+            # except:
+            #     label=rf"$({abscissa[0]},{abscissa[-1]}) "
+            #     rf"\chi^2/_\mathrm{{dof}}~[\mathrm{{dof}}] = {fit.chi2_res/fit.dof:g}~[{fit.dof:g}], "
+            #     rf"mean(\text{{AIC}}) = {np.mean(fit.AIC):g} $"
+            (line,) = axs.plot(
+                abscissa,
+                np.mean(ordinate["res"]),
+                "-",
+                label=label,
+            )
+            axs.fill_between(
+                abscissa,
+                np.mean(ordinate["res"]) + ordinate["err"],
+                np.mean(ordinate["res"]) - ordinate["err"],
+                color=line.get_color(),
+                alpha=0.4,
+            )
+    axs.set_ylabel(r"$C(\tau)$", fontsize=18)
+    axs.set_xlabel(r"$\tau/a$", fontsize=18)
+    axs.tick_params(axis="x", labelsize=12)
+    axs.tick_params(axis="y", labelsize=12)
+    axs.set_title("Mean of best resample fits sorted by AIC")
+    axs.legend(fontsize=18)
+    axs.set_yscale("log")
+    axs.grid(True, which="major", color="gray", linestyle="-", linewidth=0.8)
+    axs.minorticks_on()  # Aktiviert die Minor-Ticks
+    axs.grid(True, which="minor", color="lightgray", linestyle=":", linewidth=0.5)
+
+    filename = f"./Report/{num_fits}_best_resample_fits.png"
+    fig.savefig(filename)
+
+    return fig, axs
+#==========================================================================================================
 def plot_fit_overview(fit_state: FitState) -> tuple[plt.Figure, plt.Axes]:
 
     fig, axs = plt.subplots(1, 1, figsize=(25, 8))

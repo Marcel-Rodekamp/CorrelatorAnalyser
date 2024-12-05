@@ -9,7 +9,7 @@ from .fitmodels import (
     SimpleSumOfExponentialsP0,
 )
 
-from .plotting.plotting_new import plot_best_fits
+from .plotting.plotting_new import plot_best_fits, plot_best_fits_resample_mean
 
 
 # ======================================================================================================
@@ -115,11 +115,11 @@ for ns in range(1, num_states + 1):
             # p0={"E0": 0.5, "A0": 0.5},
             model=model,
             # p0=p0_new,
-            # resample_fit=True,
+            resample_fit=True,
             resample_type="bst",
             # bootstrap_fit_resample_prior=False,
-            # resample_fit_correlated=True
-            # central_value_fit=False,
+            # resample_fit_correlated=True,
+            central_value_fit=False
         )
         # """Make sure that A0>A1>...>An s.t. over the same parameter is averaged"""
         # print("Before sorting:", update.best_fit_param)
@@ -136,8 +136,8 @@ for ns in range(1, num_states + 1):
         # print(update.best_fit_param_bst)
         res.append(update)
         # print("all keys for averaging:", res.keys_all)
-        print(f"...Averaging over {res.keys_all}")
-        res.model_average()
+        # print(f"...Averaging over {res.keys_all}")
+        
         # for key in res.keys_all:
         #     # print("central value:",res.param_avg[key+"_est"])
         #     print("bootstrap:", np.mean(res.param_avg[key + "_bst"]))
@@ -145,7 +145,7 @@ for ns in range(1, num_states + 1):
         # print(f"np.mean({key}_bst)={np.mean(value)}")
         # print(f" {value[i]}" for enuemerate i, key in res.keys_all)
         # print(f"after averaging:{res.param_avg}")
-
+res.model_average()
 import h5py
 
 # =========================================================================================================================================================================================
@@ -172,19 +172,20 @@ if res.fit_results[0].best_fit_param is not None:
 if res.fit_results[0].Nres is not None:  # check if redsample fit
     bad_fits = 0
     for i, fit in enumerate(res.fit_results):
+        print(np.mean(fit.AIC_res))
         # print(fit.chi2_res[0])
         # print(fit.dof)
         for nbst in np.arange(0, Nbst):
             if fit.chi2_res[nbst] / fit.dof > 10:
                 if (fit.te - fit.ts) > 10:
-                    print(
-                        f"Fit no {i} nbst {nbst} with {fit.ts}, {fit.te} dof: {fit.dof} chi2/dof: {fit.chi2_res[nbst]/fit.dof}"
-                    )
+                    # print(
+                    #     f"Fit no {i} nbst {nbst} with {fit.ts}, {fit.te} dof: {fit.dof} chi2/dof: {fit.chi2_res[nbst]/fit.dof}"
+                    # )
                     bad_fits += 1
     print(f"No. of fits with chi2/dof >10: {bad_fits} of {nbst*len(res.fit_results)}")
 
 if res.fit_results[0].Nres is not None:  # check if resample fit
-    # print(res.param_avg)
+    # print(res.fit_results/)
     x_fine = np.arange(0, Nt, step=0.2)
     for nbst in np.arange(Nbst):  # res.param_avg['res']:
         # print(param, np.mean(res.param_avg['res'][param]))
@@ -277,7 +278,8 @@ if res.fit_results[0].Nres is not None:  # check if resample fit
 # #one-dim:
 
 
-plot_fig, plot_ax = plot_best_fits(fit_state=res, num_fits=6, C=data)
+# plot_fig, plot_ax = plot_best_fits(fit_state=res, num_fits=6, C=data)
+plot_best_fits_resample_mean(fit_state=res, num_fits=6, C=data)
 # costumization of the fit can be done further:
 # plot_ax.set_title("test")
 # plt.savefig('./Report/plotTopFits.png', dpi=300)
