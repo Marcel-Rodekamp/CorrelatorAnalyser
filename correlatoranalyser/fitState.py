@@ -37,7 +37,7 @@ class FitState:
         try:
             new_keys = list(new_fit.best_fit_param_res.keys())
             self.keys_all += [key for key in new_keys if key not in self.keys_all]
-            self.fit_results.sort(key=lambda x: x.AIC_res)  # sort by AIC
+            self.fit_results.sort(key=lambda x: np.mean(x.AIC_res))  # sort by AIC
         except:
             pass
 
