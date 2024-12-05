@@ -169,7 +169,7 @@ def plot_chi2(
         param_ranges[param_keys[1]], 
         chi2, 
         levels=50, 
-        norm = colors.LogNorm( 
+        norm = mpl.colors.LogNorm( 
             vmin=np.min(chi2), 
             vmax=np.max(chi2), 
         ) if log_chi2 else None,
