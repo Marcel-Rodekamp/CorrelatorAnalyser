@@ -10,7 +10,7 @@ from .fitmodels import (
 )
 
 from .plotting.plotting_new import plot_best_fits, plot_best_fits_resample_mean
-
+import h5py
 
 # ======================================================================================================
 # Fit Model:
@@ -95,11 +95,6 @@ te = abscissa[-1]
 
 # Do fits for all different nstates:
 for ns in range(1, num_states + 1):
-    # model = SimpleSumOfExponentialsModel(
-    #     Nstates=ns
-    # )  # lambda t, p: p["A0"] * np.exp(-t * p["E0"])
-    # prior = SimpleSumOfExponentialsFlatPrior(Nstates=ns)()
-    # p0_new = SimpleSumOfExponentialsP0(Nstates=ns)()
     model = MultiState(Nstates=ns)
     prior = model.prior()
     # ToDo: refresh priors
@@ -121,32 +116,19 @@ for ns in range(1, num_states + 1):
             # resample_fit_correlated=True,
             central_value_fit=False
         )
-        # """Make sure that A0>A1>...>An s.t. over the same parameter is averaged"""
-        # print("Before sorting:", update.best_fit_param)
-        # pairs = [
-        #     (update.best_fit_param[f"E{i}"], update.best_fit_param[f"A{i}"])
-        #     for i in range(ns)
-        # ]
-        # sorted_pairs = sorted(pairs, key=lambda x: gv.mean(x[0]), reverse=False)
-        # for i, (E, A) in enumerate(sorted_pairs):
-        #     update.best_fit_param[f"E{i}"] = E
-        #     update.best_fit_param[f"A{i}"] = A
-        # print("After sorting:", update.best_fit_param)
-
-        # print(update.best_fit_param_bst)
+        # print(update.prior_res)
         res.append(update)
-        # print("all keys for averaging:", res.keys_all)
-        # print(f"...Averaging over {res.keys_all}")
-        
-        # for key in res.keys_all:
-        #     # print("central value:",res.param_avg[key+"_est"])
-        #     print("bootstrap:", np.mean(res.param_avg[key + "_bst"]))
-        # value=np.mean(res.param_avg[key+"_bst"])
-        # print(f"np.mean({key}_bst)={np.mean(value)}")
-        # print(f" {value[i]}" for enuemerate i, key in res.keys_all)
-        # print(f"after averaging:{res.param_avg}")
 res.model_average()
-import h5py
+
+
+#dummp into h5 file:
+with h5py.File("./Report/FitResult.h5", "w") as h5f:
+            res.serialize_all(h5_file=h5f)
+
+# res2 = FitState()
+# with h5py.File("./Report/FitResult.h5", "r") as h5f:
+#             # res.serialize_all(h5_file=h5f)
+#     res2.deserialize_all(h5_file=h5f)
 
 # =========================================================================================================================================================================================
 # Testing the fit
@@ -214,8 +196,7 @@ if res.fit_results[0].Nres is not None:  # check if resample fit
 
 
 # ===========================================================================================================================================================================================
-# with h5py.File("./Report/FitResult.h5", "w") as h5f:
-#             res.serialize_all(h5_file=h5f)
+
 
 # res.serialize_all(h5file=h5py.File("../Report/TestData.h5", "w"))
 
@@ -279,7 +260,7 @@ if res.fit_results[0].Nres is not None:  # check if resample fit
 
 
 # plot_fig, plot_ax = plot_best_fits(fit_state=res, num_fits=6, C=data)
-plot_best_fits_resample_mean(fit_state=res, num_fits=6, C=data)
+# plot_best_fits_resample_mean(fit_state=res, num_fits=6, C=data)
 # costumization of the fit can be done further:
 # plot_ax.set_title("test")
 # plt.savefig('./Report/plotTopFits.png', dpi=300)

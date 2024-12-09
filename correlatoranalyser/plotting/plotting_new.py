@@ -142,14 +142,14 @@ def plot_best_fits_resample_mean(
             #     rf"mean(\text{{AIC}}) = {np.mean(fit.AIC):g} $"
             (line,) = axs.plot(
                 abscissa,
-                np.mean(ordinate["res"]),
+                ordinate["est"],
                 "-",
                 label=label,
             )
             axs.fill_between(
                 abscissa,
-                np.mean(ordinate["res"]) + ordinate["err"],
-                np.mean(ordinate["res"]) - ordinate["err"],
+                ordinate["est"] + ordinate["err"],
+                ordinate["est"] - ordinate["err"],
                 color=line.get_color(),
                 alpha=0.4,
             )
