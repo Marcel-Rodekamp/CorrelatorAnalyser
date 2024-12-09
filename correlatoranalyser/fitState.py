@@ -24,26 +24,38 @@ class FitState:
     # a dictionary to store the model averaged params
     # This dictionary will be filled when model_average is called
     param_avg: dict = field(default_factory=dict)
-
+    """
+    structure of the param_avg:
+    {
+    "est": {'param1': float, 'param2': float ...},
+    "err": {'param1': float, 'param2': float ...},
+    "res": {'param1: array[float], 'param2': array[float]} 
+    }
+    """
+    
     def append(self, new_fit: FitResult) -> None:
+        """ method to add a FitResult to the fit_results list of an FitState object """
         self.fit_results.append(new_fit)
-        # ToDO: add all parameters from the fit to the keys list
         try:
             new_keys = list(new_fit.best_fit_param.keys())
-            self.keys_all += [key for key in new_keys if key not in self.keys_all]
-            self.fit_results.sort(key=lambda x: x.AIC)  # sort by AIC
+            self.keys_all += [key for key in new_keys if key not in self.keys_all] # add missing keys in keys_all list
+            self.fit_results.sort(key=lambda x: x.AIC)  # list is sorted by AIC
         except:
             pass
+        #for resampled data:
         try:
             new_keys = list(new_fit.best_fit_param_res.keys())
-            self.keys_all += [key for key in new_keys if key not in self.keys_all]
-            self.fit_results.sort(key=lambda x: np.mean(x.AIC_res))  # sort by AIC
+            self.keys_all += [key for key in new_keys if key not in self.keys_all] # add missing keys in keys_all list
+            self.fit_results.sort(key=lambda x: np.mean(x.AIC_res))  # list is sorted by AIC
         except:
             pass
 
         return
 
     def model_average(self, keys: str | list[str] = None) -> dict:
+        """method to do the model average 
+        !
+         @param keys : optional parameter to specify parameter(s) to average about. """
         N = len(self.fit_results)
 
         def avg_single_key(key: str) -> None:
@@ -188,7 +200,9 @@ class FitState:
     def serialize_all(
         self, h5_file: h5py.File
     ) -> None:
-        # print(getattr(self,fit_results) )
+        """method to dump all information of a FitState object into an h5file
+        !
+        @param h5_file: open h5 file (with h5py.File("path-to-file", "w") """
         if not self.fit_results:
             raise Warning(
                 f"Import FitResults first with {type(self).__name__}.append(new_fit : FitResult) before saving in an h5 file."
@@ -199,7 +213,6 @@ class FitState:
             )
         for field in fields(self):
             field_value = getattr(self, field.name)
-            # print(field.name,field_value)
             # save the fit results using the serialize method from FitResult class
             if field.name == "fit_results":
                 for i, fit in enumerate(field_value):
@@ -216,3 +229,31 @@ class FitState:
                             data=field_value[item][key],
                         )
         return
+    
+    
+    def deserialize_all(
+            self, h5_file:h5py.File
+    )-> None:
+        for node in h5_file:
+            # print(node)
+            #read in the Fit Results using the deserialize method from fitResult
+            if node == "FitResults":
+                for i,fit in enumerate(h5_file[node]):
+                    # print(fit)
+                    t = FitResult.deserialize(h5_handle=h5_file, node=f"/FitResults/Fit{i}")
+                    # print(t)
+                    self.append(new_fit=t) #keys are automatically imported with the fit
+            elif node == "ModelAverage":
+                
+                for key in h5_file[f"{node}/Parameters"]: #'err','est, ('res')
+                    self.param_avg[key] = {}
+                    for param in h5_file[f"{node}/Parameters/{key}"]:
+                        # print(param)
+                        self.param_avg[key][param] = h5_file[f"{node}/Parameters/{key}/{param}"][()]
+                # print(self.param_avg)
+                # key_value = gv.BufferDict()
+                # iterate over parameter keys
+                
+        
+        return
+

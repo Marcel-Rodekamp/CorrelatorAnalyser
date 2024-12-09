@@ -75,10 +75,10 @@ class FitResult:
     resample_type: str | None = None
 
     # result parameter of the resampled fits
-    best_fit_param_res: gv.BufferDict | None = None
+    best_fit_param_res: dict[np.ndarray[gv.GVar]]| None = None
 
     # priors of the resampled fits
-    prior_res: gv.BufferDict | None = None
+    prior_res: dict[np.ndarray[gv.GVar]] | None = None
 
     # resulting χ² of the resampled fits
     chi2_res: np.ndarray | None = None
@@ -264,6 +264,9 @@ class FitResult:
 
         # allow "None" string 
         if self.resample_type == "None":
+            # if self.has_resamples:
+            #     self.resample_type = "bst" #when resamples are given, but no type specified "bst" is chosen
+            # else:
             self.resample_type = None
         
         # check that resample type is as expected
@@ -279,7 +282,7 @@ class FitResult:
         self.Q_value_res    = np.empty(self.Nres)
         self.AIC_res        = np.empty(self.Nres)
         self.aug_AIC_res    = np.empty(self.Nres)
-        self.prior_res      = np.empty(self.Nres, dtype=object)
+        self.prior_res      = {}#np.empty(self.Nres, dtype=object)
 
     def __repr__(self) -> str:
         r"""
@@ -301,6 +304,7 @@ class FitResult:
         
         # Fit parameters
         fit_params = self.result_params()
+        
         for key in fit_params['est'].keys():
             p = gv.gvar(fit_params['est'][key], fit_params['err'][key])
             if self.has_central_value():
@@ -354,8 +358,7 @@ class FitResult:
                     h5_handle.create_dataset(
                         f"{node}/{field.name}/{key}/err", data=gv.sdev(value)
                     )
-
-            elif isinstance(field_value, callable):
+            elif isinstance(field_value, Callable):
             # callable (e.g. self.fcn) are pickeld using dill.dumps
                 h5_handle.create_dataset(f"{node}/{field.name}", data = dumps(field_value,0) )
             
@@ -378,12 +381,12 @@ class FitResult:
         ts:int = h5_handle[f"{node}/ts"][()]
 
 
-        # check if h5file contains bootstrap data:
+        # check if h5file contains resampled data:
         if "Nres" in h5_handle[node]:
             Nres:int = h5_handle[f"{node}/Nres"][()]
             
             out = FitResult(te=te, ts=ts, Nres=Nres)
-
+            out.resample_type = str(h5_handle[f"{node}/resample_type"][()], encoding='utf-8')
         else:
             out = FitResult(te=te, ts=ts)
 
@@ -392,8 +395,9 @@ class FitResult:
             # The callable function needs to be decoded (unpickled)
             if key == "fcn":
                 setattr(out, key, loads(h5_handle[f"{node}/{key}"][()]))
-            
             # dictionaries are stored with a level more
+            elif key == "resample_type":
+                pass
             elif isinstance(h5_handle[f"{node}/{key}"], h5py.Group):
 
                 if key == "best_fit_param" or "best_fit_param_res":
@@ -412,13 +416,13 @@ class FitResult:
                         key_value[item] = gv.gvar(est, err)
                     
                     # finally set the dictionary in the class field
-                    setattr(res, key, key_value)
+                    setattr(out, key, key_value)
 
             # all other fields are probably fine
             elif isinstance(h5_handle[f"{node}/{key}"], h5py.Dataset):
-                setattr(res, key, h5_handle[f"{node}/{key}"][()])
-
-        return res
+                setattr(out, key, h5_handle[f"{node}/{key}"][()])
+        
+        return out
 
 
 
@@ -530,6 +534,7 @@ class FitResult:
             # check that the dictionary is set and fillable
             if not bool(self.best_fit_param_res):
                 self.best_fit_param_res = {}
+                self.prior_res = {}
 
             # loop over all fit parameter keys
             for key in nlf.p.keys():  
@@ -547,17 +552,21 @@ class FitResult:
                     # dtype = object allows to store gvar.gvar instances 
                     if key_red not in self.best_fit_param_res.keys():
                         self.best_fit_param_res[key_red] = np.empty(self.Nres, dtype=object)
+                        self.prior_res[key_red] = np.empty(self.Nres, dtype=object)
 
                     # extract the parameter and exponentiate it
                     self.best_fit_param_res[key_red][nres] = np.exp(nlf.p[key])
+                    self.prior_res[key_red][nres] = np.exp(nlf.prior[key])
                 else:
 
                     # check if the resample array exists. If not set it
                     if key not in self.best_fit_param_res.keys():
                         self.best_fit_param_res[key] = np.empty(self.Nres, dtype=object)
+                        self.prior_res[key] = np.empty(self.Nres, dtype=object)
 
                     # extract the parameter
                     self.best_fit_param_res[key][nres] = nlf.p[key]
+                    self.prior_res[key][nres] = nlf.prior[key]
 
             # Extract fit statistics
             self.chi2_res[nres]     = self.chi2_from_lsqfit(nlf, augmented = False)
@@ -568,7 +577,7 @@ class FitResult:
             self.AIC_res[nres]     = self.AIC_from_lsqfit(nlf, augmented = False)
             self.aug_AIC_res[nres] = self.AIC_from_lsqfit(nlf, augmented = True)
             
-            self.prior_res[nres] = nlf.prior
+            # self.prior_res[nres] = nlf.prior
 
         # central value fit (if nres is None)
         else:
