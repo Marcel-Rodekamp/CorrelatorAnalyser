@@ -16,6 +16,8 @@ from matplotlib.ticker import MaxNLocator
 
 from .mplStyle import *
 
+from collections.abc import Callable
+
 def plot_chi2(
     *,
     param_ranges: dict,
@@ -139,12 +141,17 @@ def plot_chi2(
     chi2 = np.zeros( len(param_combinations), dtype = float )
     
     # dof = Num Points - Num params = Num Points - Num vaied params - Num fixed params
-    dof = len(abscissa) - len(param_keys) - len(fixed_params.keys())
-
+    if fixed_params:
+        dof = len(abscissa) - len(param_keys) - len(fixed_params.keys())
+    else:
+        dof = len(abscissa) - len(param_keys)
+        
     for param_combinationID, param_combination in enumerate(param_combinations): 
         params = { key: param_combination[i_key] for i_key, key in enumerate(param_ranges.keys()) }
-        for key,val in fixed_params.items():
-            params[key] = val
+
+        if fixed_params:
+            for key,val in fixed_params.items():
+                params[key] = val
         chi2[param_combinationID] = gv.chi2( ordinate_gvar, model( abscissa, params ) ) / dof
 
     chi2 = chi2.reshape(len(param_ranges[param_keys[0]]), len(param_ranges[param_keys[1]]))
@@ -155,6 +162,10 @@ def plot_chi2(
     contour_axs = fig.add_subplot(gs[0, :])
     param_1_axs = fig.add_subplot(gs[1, 0])
     param_2_axs = fig.add_subplot(gs[1, 1])
+
+    # ##################################################################################################
+    # Plot contour
+    # ##################################################################################################
   
     contour_axs.contour(
         param_ranges[param_keys[0]],
@@ -180,12 +191,16 @@ def plot_chi2(
     
     contour_axs.set_xlabel(param_keys[0])
     contour_axs.set_ylabel(param_keys[1])
+
+    # ##################################################################################################
+    # Plot contour slice varying param_1
+    # ##################################################################################################
     
     param_1_axs.set_xlabel(param_keys[0])
     param_1_axs.set_ylabel(param_keys[1])
 
     for i in range(0, len(param_ranges[param_keys[1]]), len(param_ranges[param_keys[1]])//6 ):
-        param_1_axs.plot( param_ranges[param_keys[0]], chi2[:,i], label = f"{param_keys[1]} = {param_ranges[param_keys[1]][i]:g}" )
+        param_1_axs.plot( param_ranges[param_keys[0]], chi2[i,:], label = f"{param_keys[1]} = {param_ranges[param_keys[1]][i]:g}" )
 
     param_1_axs.set_xlabel(param_keys[0])
     param_1_axs.set_ylabel(r"$\chi^2 / \mathrm{dof}$")
@@ -193,8 +208,12 @@ def plot_chi2(
     if log_chi2:
         param_1_axs.set_yscale('log')
 
+    # ##################################################################################################
+    # Plot contour slice varying param_2
+    # ##################################################################################################
+
     for i in range(0, len(param_ranges[param_keys[0]]), len(param_ranges[param_keys[0]])//6 ):
-        param_2_axs.plot( param_ranges[param_keys[1]], chi2[i,:], label = f"{param_keys[0]} = {param_ranges[param_keys[0]][i]:g}" )
+        param_2_axs.plot( param_ranges[param_keys[1]], chi2[:,i], label = f"{param_keys[0]} = {param_ranges[param_keys[0]][i]:g}" )
 
     param_2_axs.set_xlabel(param_keys[1])
     param_2_axs.set_ylabel(r"$\chi^2 / \mathrm{dof}$")
