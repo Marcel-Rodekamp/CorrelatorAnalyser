@@ -188,25 +188,21 @@ class FitState:
     def serialize_all(
         self, h5_file: h5py.File
     ) -> None:
-        # print(getattr(self,fit_results) )
         if not self.fit_results:
-            raise Warning(
-                f"Import FitResults first with {type(self).__name__}.append(new_fit : FitResult) before saving in an h5 file."
-            )
-        if not self.param_avg:
-            raise Warning(
-                f"Do model averaging first with {type(self).__name__}.model_average() before saving in an h5 file"
-            )
+            raise Warning(f"Import FitResults first with {type(self).__name__}.append(new_fit : FitResult) before saving in an h5 file.")
+
         for field in fields(self):
             field_value = getattr(self, field.name)
             # print(field.name,field_value)
             # save the fit results using the serialize method from FitResult class
             if field.name == "fit_results":
                 for i, fit in enumerate(field_value):
-                    fit.serialize(h5_handle=h5_file, node=f"/FitResults/Fit{i}")
+                    fit.serialize(h5_handle=h5_file, node=f"FitResults/Fit{i}")
+
             # save the keys
             elif field.name == "keys_all":
                 h5_file.create_dataset(f"ModelAverage/KeysList", data=field_value)
+
             # save the averaged parameters
             elif field.name == "param_avg":
                 for item in field_value:
