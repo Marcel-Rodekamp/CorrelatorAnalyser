@@ -43,7 +43,7 @@ class FitResult:
 
     # prios of the central value fit
     # only filled if actually used
-    used_prior: gv.BufferDict | None = None
+    prior: gv.BufferDict | None = None
 
     # resulting χ² of the central value fit
     chi2: float | None = None
@@ -338,7 +338,7 @@ class FitResult:
             # None values can be skipped
                 pass
 
-            elif type(field_value) == dict:  
+            elif isinstance(field_value, dict) or isinstance(field_value, gv.BufferDict):
             # In case we use a dictionary store the value dictionary in a deeper node (nest the node)
             # {key: value} -> h5file[node/key] == value
 
@@ -355,13 +355,19 @@ class FitResult:
                         f"{node}/{field.name}/{key}/err", data=gv.sdev(value)
                     )
 
-            elif isinstance(field_value, callable):
+            elif field.name == 'fcn':
             # callable (e.g. self.fcn) are pickeld using dill.dumps
                 h5_handle.create_dataset(f"{node}/{field.name}", data = dumps(field_value,0) )
-            
+            elif field.name == 'prior_res':
+                h5_handle.create_dataset(f"{node}/{field.name}", data = dumps(field_value,0) )
             else:
             # other types are usually fine to just dump into h5files.
-                h5_handle.create_dataset(f"{node}/{field.name}", data=field_value)
+                try:
+                    h5_handle.create_dataset(f"{node}/{field.name}", data=field_value)
+                except Exception as e:
+                    print(f"Couldnt write: {field.name}, {type(field_value)}:\n{field_value}")
+
+                    raise e
 
         return
 
@@ -409,16 +415,23 @@ class FitResult:
                         err = h5_handle[f"{node}/{key}/{item}/err"][()]
 
                         # assemble the central value and error in a gvar
+                        # Notice, we did not save correlations between gvars 
+                        # in the first place
                         key_value[item] = gv.gvar(est, err)
                     
                     # finally set the dictionary in the class field
-                    setattr(res, key, key_value)
+                    setattr(out, key, key_value)
+            elif key == 'prior_res':
+                setattr(out, key, loads(h5_handle[f"{node}/{key}"][()]))
+
+            elif key == 'resample_type':
+                setattr(out, key, h5_handle[f"{node}/{key}"][()].decode("utf-8"))
 
             # all other fields are probably fine
             elif isinstance(h5_handle[f"{node}/{key}"], h5py.Dataset):
-                setattr(res, key, h5_handle[f"{node}/{key}"][()])
+                setattr(out, key, h5_handle[f"{node}/{key}"][()])
 
-        return res
+        return out
 
 
 
@@ -431,7 +444,7 @@ class FitResult:
     # import_from_FITTER(self, *args) -> None
     # and fill the fields defined above
 
-    def AIC_from_lsqfit(self, nlf: lsqfit.nonlinear_fit, augmented: bool = False, small_sample_correction: bool = False) -> float:
+    def AIC_from_lsqfit(self, nlf: lsqfit.nonlinear_fit, augmented: bool = False, small_sample_correction: bool = True) -> float:
         r"""
             @param nlt: lsqfit.nonlinear_fit, Fit result from lsqfit. It stores all relevant information to
                                                compute the AIC (see below)
