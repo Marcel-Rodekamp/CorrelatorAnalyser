@@ -303,7 +303,7 @@ class FitResult:
         fit_params = self.result_params()
         for key in fit_params['est'].keys():
             p = gv.gvar(fit_params['est'][key], fit_params['err'][key])
-            if self.has_central_value():
+            if self.has_central_value() and self.prior is not None:
                 rep+= f"    - {key}: {p}  [{self.prior[key]}]\n"
             else:
                 # Every bootstrap has it's own prior, we can't plot all of them here, hence we neglect this information
@@ -474,7 +474,7 @@ class FitResult:
         #       We may want to come up with a way to allow a more flexible way of calculating
         #       the AIC.
         #       For reference see issue #8
-        AIC: float = 2 * (Ndata-Nparam)
+        AIC: float = 2 * (Nparam-Ndata)
 
         if small_sample_correction:
             # This corrections is negligible if Ndata >> Nparam**2 and thus often very useful
