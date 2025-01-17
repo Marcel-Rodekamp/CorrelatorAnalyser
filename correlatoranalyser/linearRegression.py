@@ -330,14 +330,14 @@ def linear_regression(
         design_matrix: np.ndarray = np.column_stack((-abscissa, np.ones_like(abscissa))) if has_intercept else -abscissa.reshape(-1, 1)
 
         result_params, solution_matrix = lin_reg(
-            y = ordinate_est if ordinate_est is not None else np.mean(resample_ordinate_est, axis=0), 
+            y = resample_ordinate_est[nres], 
             X = design_matrix, 
             W = weight_matrix, 
             S = solution_matrix if frozen_weight_matrix else None
         )
 
         fit_result.import_from_linear_regression(
-            target_data = ordinate_est if ordinate_est is not None else np.mean(resample_ordinate_est, axis=0),
+            target_data = resample_ordinate_est[nres],
             result_params = result_params,
             design_matrix = design_matrix,
             weight_matrix = weight_matrix,
