@@ -12,7 +12,7 @@ from collections.abc import Callable
 
 import lsqfit
 
-
+import scipy.stats
 
 @dataclass
 class FitResult:
@@ -434,7 +434,56 @@ class FitResult:
         return out
 
 
+    def calculate_AIC(self, chi2, small_sample_correction: bool = True):
+        r"""
+            @param small_sample_correction: bool, flag to add/remove a small sample correction (default: False)
 
+            Compute the Akaike information criterion for a fit result
+            based on the chi^2 obtained from lsqfit.
+            The form can be found in
+                https://arxiv.org/abs/2305.19417
+                https://arxiv.org/abs/2208.14983
+                https://arxiv.org/abs/2008.01069
+            equation 3 in the first:
+                AIC = -2ln L^* + 2k - 2d_K 
+
+                AIC_augmented = AIC + \sum_{\Theta} ( \Theta - p_\Theta )**2/var(p_\Theta) 
+
+            A small sample correction can be applied to both by seeting small_sample_correction 
+            https://en.wikipedia.org/wiki/Akaike_information_criterion#Modification_for_small_sample_size
+                AICc = AIC + (2k^2 + 2k)/(d_K - k -1)
+
+            Here we compare
+                1. -2*ln(L^*) = chi^2
+                2. k = number of parameters
+                3. d_K = number of points
+                5. Model parameter \Theta
+                4. p_\Theta prior for parameter \Theta
+        """
+        if bool(self.best_fit_param):
+            Nparam: int = len(self.best_fit_param.keys())
+        elif bool(self.best_fit_param_res):
+            Nparam: int = len(self.best_fit_param_res.keys())
+        else:
+            raise RuntimeError("FitResult not initialized, can not determine number of parameters for calculating AIC")
+
+        Ndata = self.te - self.ts
+
+        # start with the degree of freedom. 
+        # TODO: This factor 2 is highly debated as it is very aggressive for many data sets
+        #       We may want to come up with a way to allow a more flexible way of calculating
+        #       the AIC.
+        #       For reference see issue #8
+        AIC: float = 2 * (Ndata-Nparam)
+
+        if small_sample_correction:
+            # This corrections is negligible if Ndata >> Nparam**2 and thus often very useful
+            # it effectively favours models with less parameters
+            AIC += (2*Nparam**2 + 2*Nparam)/(Ndata - Nparam - 1)
+
+        AIC += chi2
+
+        return AIC
 
     # ###########################################
     # Importers
@@ -479,27 +528,12 @@ class FitResult:
                 5. Model parameter \Theta
                 4. p_\Theta prior for parameter \Theta
         """
-        Nparam: int = len(nlf.p)
-        Ndata: int  = len(nlf.x)
-
-        # start with the degree of freedom. 
-        # TODO: This factor 2 is highly debated as it is very aggressive for many data sets
-        #       We may want to come up with a way to allow a more flexible way of calculating
-        #       the AIC.
-        #       For reference see issue #8
-        AIC: float = 2 * (Nparam - Ndata)
-
-        if small_sample_correction:
-            # This corrections is negligible if Ndata >> Nparam**2 and thus often very useful
-            # it effectively favours models with less parameters
-            AIC += (2*Nparam**2 + 2*Nparam)/(Ndata - Nparam - 1)
-
         # by default lsqfit includes priors to the chi^2 (if porvided) 
         if augmented:
-            AIC += nlf.chi2
+            AIC = self.calculate_AIC(nlf.chi2, small_sample_correction)
         # for non-augmented we have to explicitly recalculate chi^2
         else:
-            AIC += gv.chi2( nlf.y, nlf.fcn( nlf.x, nlf.p ) )
+            AIC = self.calculate_AIC(gv.chi2( nlf.y, nlf.fcn( nlf.x, nlf.p ) ), small_sample_correction)
 
         return AIC
     
@@ -507,7 +541,7 @@ class FitResult:
         r"""
             @param nlt: lsqfit.nonlinear_fit, Fit result from lsqfit. It stores all relevant information to
                                                compute the chi^2
-            @param augmented: bool, flag to calculate the augmented AIi^2, ie including priors (default: False)
+@param augmented: bool, flag to calculate the augmented AIi^2, ie including priors (default: False)
 
             This function is used to set the parameters
             self.chi2
@@ -616,6 +650,81 @@ class FitResult:
             self.aug_AIC    = self.AIC_from_lsqfit(nlf, augmented = True)
             
             self.prior      = nlf.prior
+
+    def import_from_linear_regression(self, target_data, result_params, design_matrix, weight_matrix, parameter_names, nres = None):
+        # deduce if we have an intercept or not by checking how many parameters we have
+        has_intercept = len(result_params) == 2
+
+        if self.fcn is None:
+            if has_intercept:
+                self.fcn = lambda x,p: x*p[parameter_names[0]] + p[parameter_names[1]]
+            else:
+                self.fcn = lambda x,p: x*p[parameter_names[0]]
+
+        if self.dof is None:
+            self.dof = np.abs(self.te-self.ts) - len(result_params)
+
+            
+
+        if nres is not None:
+            # check that the dictionary is set and fillable
+            if not bool(self.best_fit_param_res):
+                self.best_fit_param_res = {}
+
+            # calculate Gaussian error propagation
+            cov = np.linalg.inv(design_matrix.T @ weight_matrix @ design_matrix)
+            
+            for key_id,key in enumerate(parameter_names):
+                # check if the resample array exists. If not set it
+                # dtype = object allows to store gvar.gvar instances 
+                if key not in self.best_fit_param_res.keys():
+                    self.best_fit_param_res[key] = np.empty(self.Nres, dtype=object)
+
+                self.best_fit_param_res[key][nres] = gv.gvar(
+                    result_params[key_id],
+                    np.sqrt(cov[key_id,key_id])
+                )
+
+            result = design_matrix @ result_params
+            residuals = target_data - result
+            self.chi2_res[nres] = residuals.T @ weight_matrix @ residuals # no priors in this fit
+            self.aug_chi2_res[nres] = self.chi2
+
+            F_statistic = (target_data.T @ weight_matrix @ target_data - residuals.T @ weight_matrix @ residuals) / 2 / (self.chi2/self.dof)
+            self.Q_value_res[nres] = 1 - scipy.stats.f.cdf(F_statistic, 2, self.dof)
+
+            self.AIC_res[nres] = self.calculate_AIC( self.chi2 )
+            self.aug_AIC_res[nres] = self.AIC
+
+            self.prior_res = None
+
+        # central value fit
+        else: 
+            if not bool(self.best_fit_param):
+                self.best_fit_param = {}
+
+            # calculate Gaussian error propagation
+            cov = np.linalg.inv(design_matrix.T @ weight_matrix @ design_matrix)
+            
+            for key_id,key in enumerate(parameter_names):
+                self.best_fit_param[key] = gv.gvar(
+                    result_params[key_id],
+                    np.sqrt(cov[key_id,key_id])
+                )
+
+            result = design_matrix @ result_params
+            residuals = target_data - result
+            self.chi2 = residuals.T @ weight_matrix @ residuals # no priors in this fit
+            self.aug_chi2 = self.chi2
+
+            F_statistic = (target_data.T @ weight_matrix @ target_data - residuals.T @ weight_matrix @ residuals) / 2 / (self.chi2/self.dof)
+            self.Q_value = 1 - scipy.stats.f.cdf(F_statistic, 2, self.dof)
+
+            self.AIC = self.calculate_AIC( self.chi2 )
+            self.aug_AIC = self.AIC
+
+            self.prior = None
+        # end else
 
 # end of class: FitResult 
 
