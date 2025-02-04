@@ -247,7 +247,7 @@ def fit(
             
             # provided covariance in case standard deviation is not given (preferred pass)
             elif ordinate_cov is not None:
-                temp: np.ndarray = np.diag(ordinate_cov)
+                temp: np.ndarray = np.sqrt( np.diag(ordinate_cov) )
 
             # provided resample standard deviation only, we can attempt to reuse it (optional pass for reusability)
             # if the dimension matches the expected standard deviation (frozen case for resampled fits)
@@ -260,7 +260,7 @@ def fit(
             # Same as above but with covariance (optional pass for reusability)
             elif resample_ordinate_cov is not None:
                 if resample_ordinate_cov.shape == (N, N):
-                    temp: np.ndarray = np.diag(resample_ordinate_cov)
+                    temp: np.ndarray = np.sqrt( np.diag(resample_ordinate_cov) )
                 else:
                     raise ValueError(f"No standard devation given and could not be extracted from resample_ordinate_cov with shape {resample_ordinate_cov.shape}")
             
@@ -357,10 +357,10 @@ def fit(
             elif resample_ordinate_cov is not None:
                 # frozen error: one for all
                 if resample_ordinate_cov.shape[0] == N and resample_ordinate_cov.shape[1] == N:
-                    temp: np.ndarray = np.diag(resample_ordinate_cov)
+                    temp: np.ndarray = np.sqrt( np.diag(resample_ordinate_cov) )
                 # one std for each resample
                 elif resample_ordinate_cov.shape[0] == Nres and resample_ordinate_cov.shape[1] == N and resample_ordinate_cov.shape[2] == N:
-                    temp: np.ndarray = np.diag(resample_ordinate_cov[nres,:,:])
+                    temp: np.ndarray = np.sqrt( np.diag(resample_ordinate_cov[nres,:,:]) )
                 else:
                     raise ValueError(f"Couldn't identify resample standard deviation from provided resample_ordinate_cov of shape {resample_ordinate_cov.shape}")
 
