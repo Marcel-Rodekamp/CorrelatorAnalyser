@@ -255,7 +255,7 @@ def fit(
                 if resample_ordinate_std.shape[0] == N:
                     temp: np.ndarray = resample_ordinate_std
                 else:
-                    raise ValueError(f"No standard deviation specified for central value fit, only resample_ordinate_std with shape {resample_ordinate_var.shape}")
+                    raise ValueError(f"No standard deviation specified for central value fit, only resample_ordinate_std with shape {resample_ordinate_std.shape}")
 
             # Same as above but with covariance (optional pass for reusability)
             elif resample_ordinate_cov is not None:
