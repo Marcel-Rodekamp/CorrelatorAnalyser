@@ -165,19 +165,23 @@ def fit(
                     raise ValueError(f"Expecting resample_ordinate_std of shape (Nres,N, ...) or (N, ...) but has {resample_ordinate_std.shape}")
 
         # resample_ordinate_cov is optional
-        if resample_ordinate_std is not None:
+        if resample_ordinate_cov is not None:
             # We expect resample_ordinate_cov by dimensions
-            # 1. (Nbst, N, N), i.e. one uncertainty per resample
-            # 2. (N, N), i.e. one uncertainty for all resamples (frozen)
+            # 1. (Nbst, N, N), i.e. one covariance matrix per resample
+            # 2. (N, N), i.e. one covariance matrix for all resamples (frozen)
 
             # case 1:
-            if resample_ordinate_cov.shape[0] == Nres:
-                if resample_ordinate_cov.shape[1] != N and resample_ordinate_cov.shape[2] != N and resample_ordinate_cov.ndim == 3:
+            if resample_ordinate_cov.ndim == 3:
+                if resample_ordinate_cov.shape[0] != Nres or resample_ordinate_cov.shape[1] != N or resample_ordinate_cov.shape[2] != N:
                     raise ValueError(f"Expecting resample_ordinate_cov of shape (Nres,N,N) or (N,N) but has {resample_ordinate_cov.shape}")
             # case 2:
-            else :
-                if resample_ordinate_cov.shape[0] != N and resample_ordinate_cov.shape[1] != N and resample_ordinate_cov.ndim == 2:
+            elif resample_ordinate_cov.ndim == 2:
+                if resample_ordinate_cov.shape[0] != N or resample_ordinate_cov.shape[1] != N:
                     raise ValueError(f"Expecting resample_ordinate_cov of shape (Nres,N,N) or (N,N) but has {resample_ordinate_cov.shape}")
+            # any other case:
+            else:
+               raise ValueError(f"Expecting resample_ordinate_cov of shape (Nres,N,N) or (N,N) but has {resample_ordinate_cov.shape}")
+               
     
     # Check the existence of the model function
     if model is None:
