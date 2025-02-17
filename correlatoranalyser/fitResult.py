@@ -526,7 +526,7 @@ class FitResult:
     def import_from_lsqfit(self, nlf: lsqfit.nonlinear_fit, nres: None | int = None) -> None:
         """
             @param nlf: lsqfit.nonlinear_fit, lsqfit fit result. 
-            @param nres: int, resample ID imports the fit result into the resample arrays at postion nres. If none, the central value fit fields
+            @param nres: int, resample ID imports the fit result into the resample arrays at position nres. If none, the central value fit fields
                               are populated
             save the interesting results from a lsqfit, if nres is given then save in corresponding row nres of the bootstrap parameters
         """
