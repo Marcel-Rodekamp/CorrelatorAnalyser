@@ -217,7 +217,9 @@ def fit(
             # start point of the fit interval
             ts=abscissa[0], 
             # end point of the fit interval
-            te=abscissa[-1], 
+            te=abscissa[-1],
+            # number of data points
+            Ndata=len(abscissa),
             # number of resamples
             Nres=Nres, 
             # resample type
@@ -229,7 +231,9 @@ def fit(
             # start point of the fit interval
             ts=abscissa[0], 
             # end point of the fit interval
-            te=abscissa[-1]
+            te=abscissa[-1],
+            # number of data points
+            Ndata=len(abscissa)
         ) 
 
     # prepare data for the central value fit:

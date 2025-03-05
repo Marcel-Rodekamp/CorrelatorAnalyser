@@ -28,6 +28,9 @@ class FitResult:
     # end point of the fit range
     te: int | np.ndarray
 
+    # number of data points used in the fit
+    Ndata: int
+
     # number of degrees of freedom
     dof: int | None = None
 
@@ -292,7 +295,7 @@ class FitResult:
         """
 
         # General information on the fit model
-        rep = f"FitResult[ ({self.ts},{self.te}), resample:{ self.resample_type if self.has_resamples() else False }]:\n"
+        rep = f"FitResult[ ({self.ts},{self.te}), Ndata={self.Ndata}, resample:{ self.resample_type if self.has_resamples() else False }]:\n"
 
         # Fit statistics
         if self.has_central_value():
@@ -382,16 +385,17 @@ class FitResult:
 
         te:int = h5_handle[f"{node}/te"][()]
         ts:int = h5_handle[f"{node}/ts"][()]
+        Ndata:int = h5_handle[f"{node}/Ndata"][()]
 
 
         # check if h5file contains bootstrap data:
         if "Nres" in h5_handle[node]:
             Nres:int = h5_handle[f"{node}/Nres"][()]
             
-            out = FitResult(te=te, ts=ts, Nres=Nres)
+            out = FitResult(te=te, ts=ts, Ndata=Ndata, Nres=Nres)
 
         else:
-            out = FitResult(te=te, ts=ts)
+            out = FitResult(te=te, ts=ts, Ndata=Ndata)
 
         # read in the data:
         for key in h5_handle[node]:
@@ -467,19 +471,22 @@ class FitResult:
         else:
             raise RuntimeError("FitResult not initialized, can not determine number of parameters for calculating AIC")
 
-        Ndata = self.te - self.ts
-
         # start with the degree of freedom. 
         # TODO: This factor 2 is highly debated as it is very aggressive for many data sets
         #       We may want to come up with a way to allow a more flexible way of calculating
         #       the AIC.
         #       For reference see issue #8
-        AIC: float = 2 * (Nparam-Ndata)
+        AIC: float = 2 * (Nparam-self.Ndata)
 
         if small_sample_correction:
+
+            # An error is raised if the number of data points is too small
+            if self.Ndata <= Nparam +1:
+                raise RuntimeError(f"In order to use the AIC small sample correction the number of data points and parameters should be such that Ndata>Nparam+1, but instead they have the values Ndata={self.Ndata}, Nparam={Nparam}.")
+
             # This corrections is negligible if Ndata >> Nparam**2 and thus often very useful
             # it effectively favours models with less parameters
-            AIC += (2*Nparam**2 + 2*Nparam)/(Ndata - Nparam - 1)
+            AIC += (2*Nparam**2 + 2*Nparam)/(self.Ndata - Nparam - 1)
 
         AIC += chi2
 
