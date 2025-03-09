@@ -7,3 +7,6 @@ from .fitState import FitState
 
 # A method that with provided data performs fit and return a FitResult
 from .fit import fit
+
+# A explicit linear regression
+from .linearRegression import linear_regression
