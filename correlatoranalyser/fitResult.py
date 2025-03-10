@@ -692,6 +692,19 @@ class FitResult:
                     np.sqrt(cov[key_id,key_id])
                 )
 
+                # usually we have parameters like "log(A0)" of which we are interested in
+                # "A0". Here we manually add "A0".
+                if "log" in key:
+                    # remove the log
+                    key_red = key[4:-1]
+                    if key_red not in self.best_fit_param_res.keys():
+                        self.best_fit_param_res[key_red] = np.empty(self.Nres, dtype=object)
+
+                    self.best_fit_param_res[key_red][nres] = gv.exp(
+                        self.best_fit_param_res[key][nres]
+                    )
+
+
             result = design_matrix @ result_params
             residuals = target_data - result
             self.chi2_res[nres] = residuals.T @ weight_matrix @ residuals # no priors in this fit
@@ -718,6 +731,19 @@ class FitResult:
                     result_params[key_id],
                     np.sqrt(cov[key_id,key_id])
                 )
+
+                # usually we have parameters like "log(A0)" of which we are interested in
+                # "A0". Here we manually add "A0".
+                if "log" in key:
+                    # remove the log
+                    key_red = key[4:-1]
+
+                    if key_red not in self.best_fit_param.keys():
+                        self.best_fit_param[key_red] = np.empty(self.Nres, dtype=object)
+
+                    self.best_fit_param[key_red] = gv.exp(
+                        self.best_fit_param[key]
+                    )
 
             result = design_matrix @ result_params
             residuals = target_data - result
