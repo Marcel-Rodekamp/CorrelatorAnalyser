@@ -191,6 +191,8 @@ def linear_regression(
             ts=abscissa[0], 
             # end point of the fit interval
             te=abscissa[-1], 
+            # Number of data points
+            Ndata = len(abscissa),
             # number of resamples
             Nres=Nres, 
             # resample type
@@ -202,7 +204,9 @@ def linear_regression(
             # start point of the fit interval
             ts=abscissa[0], 
             # end point of the fit interval
-            te=abscissa[-1]
+            te=abscissa[-1],
+            # Number of data points
+            Ndata = len(abscissa),
         ) 
 
     if central_value_fit:
