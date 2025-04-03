@@ -168,7 +168,7 @@ class FitResult:
                 }
             elif self.resample_type == 'jkn': 
                 result_params_dict["err"] = {
-                    key: (self.Nres-1)/(self.Nres) * np.std(
+                    key: np.sqrt(self.Nres-1) * np.std(
                             gv.mean(self.best_fit_param_res[key]), 
                             axis = 0
                          ) 
@@ -243,7 +243,7 @@ class FitResult:
             if self.resample_type == 'bst':
                 out["err"]: np.ndarray = np.std(out["res"], axis = 0) 
             elif self.resample_type == 'jkn': 
-                out["err"]: np.ndarray = (self.Nres-1)/(self.Nres) * np.std(out["res"], axis = 0) 
+                out["err"]: np.ndarray = np.sqrt(self.Nres-1) * np.std(out["res"], axis = 0) 
             else:
                 # this case is checked in __post_init__
                 pass
