@@ -226,7 +226,7 @@ def linear_regression(
             # if the dimension matches the expected standard deviation (frozen case for resampled fits)
             elif resample_ordinate_std is not None:
                 if resample_ordinate_std.shape[0] == N:
-                    weight_matrix: np.ndarray = np.diag(1/resample_ordinate_std)
+                    weight_matrix: np.ndarray = np.diag(1/resample_ordinate_std**2)
                 else:
                     raise ValueError(f"No standard deviation specified for central value fit, only resample_ordinate_std with shape {resample_ordinate_std.shape}")
 
@@ -292,12 +292,12 @@ def linear_regression(
                 if resample_ordinate_std.shape[0] == N:
                     frozen_weight_matrix:bool = True
 
-                    weight_matrix: np.ndarray = np.diag(1/resample_ordinate_std)
+                    weight_matrix: np.ndarray = np.diag(1/resample_ordinate_std**2)
                 # one std for each resample
                 elif resample_ordinate_std.shape[0] == Nres:
                     frozen_weight_matrix:bool = False
 
-                    weight_matrix: np.ndarray = np.diag(1/resample_ordinate_std[nres])
+                    weight_matrix: np.ndarray = np.diag(1/resample_ordinate_std[nres]**2)
                 else:
                     raise ValueError(f"Couldn't identify resample standard deviation from provided resample_ordinate_std of shape {resample_ordinate_std.shape}")
             # provided covariance in case standard deviation is not given
