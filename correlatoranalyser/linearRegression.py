@@ -255,7 +255,7 @@ def linear_regression(
             else:
                 raise ValueError(f"No covariance given and could not be extracted")
 
-        design_matrix: np.ndarray = np.column_stack((-abscissa, np.ones_like(abscissa))) if has_intercept else -abscissa.reshape(-1, 1)
+        design_matrix: np.ndarray = np.column_stack((abscissa, np.ones_like(abscissa))) if has_intercept else abscissa.reshape(-1, 1)
 
         result_params, solution_matrix = lin_reg(
             y = ordinate_est if ordinate_est is not None else np.mean(resample_ordinate_est, axis=0), 
@@ -331,7 +331,7 @@ def linear_regression(
             else:
                 raise ValueError(f"Couldn't identify resample covariance from provided resample_ordinate_cov of shape {resample_ordinate_cov.shape}")
 
-        design_matrix: np.ndarray = np.column_stack((-abscissa, np.ones_like(abscissa))) if has_intercept else -abscissa.reshape(-1, 1)
+        design_matrix: np.ndarray = np.column_stack((abscissa, np.ones_like(abscissa))) if has_intercept else abscissa.reshape(-1, 1)
 
         result_params, solution_matrix = lin_reg(
             y = resample_ordinate_est[nres], 
