@@ -669,7 +669,7 @@ class FitResult:
                 self.fcn = lambda x,p: x*p[parameter_names[0]]
 
         if self.dof is None:
-            self.dof = np.abs(self.te-self.ts) - len(result_params)
+            self.dof = self.Ndata
 
             
 
