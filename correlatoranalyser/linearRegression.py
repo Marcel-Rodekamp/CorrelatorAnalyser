@@ -2,6 +2,8 @@ import numpy as np
 
 import gvar as gv
 
+import warnings
+
 import h5py
 
 from dataclasses import dataclass, field, fields
@@ -226,7 +228,7 @@ def linear_regression(
                 if resample_ordinate_std.shape[0] == N:
                     weight_matrix: np.ndarray = np.diag(1/resample_ordinate_std)
                 else:
-                    raise ValueError(f"No standard deviation specified for central value fit, only resample_ordinate_std with shape {resample_ordinate_var.shape}")
+                    raise ValueError(f"No standard deviation specified for central value fit, only resample_ordinate_std with shape {resample_ordinate_std.shape}")
 
             # Same as above but with covariance (optional pass for reusability)
             elif resample_ordinate_cov is not None:
