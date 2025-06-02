@@ -131,7 +131,7 @@ class FitState:
                 if self.fit_results[0].resample_type == 'bst':
                     self.param_avg["err"][key] = np.std(modelAvg_res,axis=0)
                 elif self.fit_results[0].resample_type == 'jkn':
-                    self.param_avg["err"][key] = ((Nres-1)/Nres) * np.std(modelAvg_res,axis=0)
+                    self.param_avg["err"][key] = np.sqrt(Nres-1) * np.std(modelAvg_res,axis=0)
                 # if no central value fit is done we simply compute the mean over bootstrap fits
                 # these two values are equal provided, same fitting strategy!
                 if self.fit_results[0].AIC is None:  # check if central value fit
