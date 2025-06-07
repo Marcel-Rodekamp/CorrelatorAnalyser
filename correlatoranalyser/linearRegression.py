@@ -2,6 +2,8 @@ import numpy as np
 
 import gvar as gv
 
+import warnings
+
 import h5py
 
 from dataclasses import dataclass, field, fields
@@ -146,7 +148,7 @@ def linear_regression(
                     raise ValueError(f"Expecting resample_ordinate_std of shape (Nres,N, ...) or (N, ...) but has {resample_ordinate_std.shape}")
 
         # resample_ordinate_cov is optional
-        if resample_ordinate_std is not None:
+        if resample_ordinate_cov is not None:
             # We expect resample_ordinate_cov by dimensions
             # 1. (Nbst, N, N), i.e. one uncertainty per resample
             # 2. (N, N), i.e. one uncertainty for all resamples (frozen)
@@ -224,9 +226,9 @@ def linear_regression(
             # if the dimension matches the expected standard deviation (frozen case for resampled fits)
             elif resample_ordinate_std is not None:
                 if resample_ordinate_std.shape[0] == N:
-                    weight_matrix: np.ndarray = np.diag(1/resample_ordinate_std)
+                    weight_matrix: np.ndarray = np.diag(1/resample_ordinate_std**2)
                 else:
-                    raise ValueError(f"No standard deviation specified for central value fit, only resample_ordinate_std with shape {resample_ordinate_var.shape}")
+                    raise ValueError(f"No standard deviation specified for central value fit, only resample_ordinate_std with shape {resample_ordinate_std.shape}")
 
             # Same as above but with covariance (optional pass for reusability)
             elif resample_ordinate_cov is not None:
@@ -255,7 +257,7 @@ def linear_regression(
             else:
                 raise ValueError(f"No covariance given and could not be extracted")
 
-        design_matrix: np.ndarray = np.column_stack((-abscissa, np.ones_like(abscissa))) if has_intercept else -abscissa.reshape(-1, 1)
+        design_matrix: np.ndarray = np.column_stack((abscissa, np.ones_like(abscissa))) if has_intercept else abscissa.reshape(-1, 1)
 
         result_params, solution_matrix = lin_reg(
             y = ordinate_est if ordinate_est is not None else np.mean(resample_ordinate_est, axis=0), 
@@ -290,12 +292,12 @@ def linear_regression(
                 if resample_ordinate_std.shape[0] == N:
                     frozen_weight_matrix:bool = True
 
-                    weight_matrix: np.ndarray = np.diag(1/resample_ordinate_std)
+                    weight_matrix: np.ndarray = np.diag(1/resample_ordinate_std**2)
                 # one std for each resample
                 elif resample_ordinate_std.shape[0] == Nres:
                     frozen_weight_matrix:bool = False
 
-                    weight_matrix: np.ndarray = np.diag(1/resample_ordinate_std[nres])
+                    weight_matrix: np.ndarray = np.diag(1/resample_ordinate_std[nres]**2)
                 else:
                     raise ValueError(f"Couldn't identify resample standard deviation from provided resample_ordinate_std of shape {resample_ordinate_std.shape}")
             # provided covariance in case standard deviation is not given
@@ -331,7 +333,7 @@ def linear_regression(
             else:
                 raise ValueError(f"Couldn't identify resample covariance from provided resample_ordinate_cov of shape {resample_ordinate_cov.shape}")
 
-        design_matrix: np.ndarray = np.column_stack((-abscissa, np.ones_like(abscissa))) if has_intercept else -abscissa.reshape(-1, 1)
+        design_matrix: np.ndarray = np.column_stack((abscissa, np.ones_like(abscissa))) if has_intercept else abscissa.reshape(-1, 1)
 
         result_params, solution_matrix = lin_reg(
             y = resample_ordinate_est[nres], 
