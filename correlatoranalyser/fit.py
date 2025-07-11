@@ -400,8 +400,15 @@ def fit(
         if prior is not None and resample_fit_resample_prior:
             prior_res = gv.BufferDict()
 
-            for key in prior.keys():
-                prior_res[key] = gv.gvar(gv.sample(prior[key], 1), prior[key].sdev)
+            #we resample the prior in the standard way if the bootstrap is used
+            if resample_type == 'bst':
+                for key in prior.keys():
+                    prior_res[key] = gv.gvar(gv.sample(prior[key], 1), prior[key].sdev)
+
+            #if instead the jackknife resampling is being used, the resampple of the prior should be done with a std smaller by a factor of sqrt(Nres-1)
+            elif resample_type == 'jkn':
+                for key in prior.keys():
+                    prior_res[key] = gv.gvar(gv.sample( gv.gvar(prior[key].mean, prior[key].sdev/np.sqrt(Nres-1)), 1), prior[key].sdev)
             
             args["prior"] = prior_res
 
