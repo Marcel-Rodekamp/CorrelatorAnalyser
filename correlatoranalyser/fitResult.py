@@ -712,9 +712,9 @@ class FitResult:
 
             F_statistic = (target_data.T @ weight_matrix @ target_data - residuals.T @ weight_matrix @ residuals) / 2 / (self.chi2/self.dof)
             self.Q_value_res[nres] = 1 - scipy.stats.f.cdf(F_statistic, 2, self.dof)
-
-            self.AIC_res[nres] = self.calculate_AIC( self.chi2 )
-            self.aug_AIC_res[nres] = self.AIC
+            
+            self.AIC_res[nres] = self.calculate_AIC( self.chi2_res[nres] )
+            self.aug_AIC_res[nres] = self.AIC_res[nres]
 
             self.prior_res = None
 
