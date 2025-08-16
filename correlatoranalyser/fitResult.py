@@ -738,9 +738,6 @@ class FitResult:
                     # remove the log
                     key_red = key[4:-1]
 
-                    if key_red not in self.best_fit_param.keys():
-                        self.best_fit_param[key_red] = np.empty(self.Nres, dtype=object)
-
                     self.best_fit_param[key_red] = gv.exp(
                         self.best_fit_param[key]
                     )
