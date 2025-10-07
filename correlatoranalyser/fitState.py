@@ -12,6 +12,29 @@ from typing import Self, List, Dict
 
 from .fitResult import FitResult
 
+import re
+
+import warnings
+
+from typing import Any, Dict
+
+def _read_ds(ds: h5py.Dataset):
+    """Read an h5py dataset, decoding strings when needed."""
+    # h5py>=3: this returns str instead of bytes for string datasets
+    try:
+        return ds.asstr()[()]
+    except Exception:
+        data = ds[()]
+        if isinstance(data, (bytes, bytearray)):
+            return data.decode("utf-8")
+        if isinstance(data, np.ndarray) and data.dtype.kind in ("S", "O"):
+            return np.array(
+                [x.decode("utf-8") if isinstance(x, (bytes, bytearray)) else x for x in data],
+                dtype=object,
+            )
+        return data
+
+
 @dataclass
 class FitState:
     
@@ -212,3 +235,52 @@ class FitState:
                             data=field_value[item][key],
                         )
         return
+
+    def deserialize_all(self, h5_file: h5py.File):
+        if "FitResults" in h5_file:
+            fr_grp = h5_file["FitResults"]
+
+            def _fit_idx(name: str) -> int:
+                m = re.search(r"(\d+)$", name)
+                return int(m.group(1)) if m else -1
+
+            for node_name in sorted(fr_grp.keys(), key=_fit_idx):
+                node_path = f"FitResults/{node_name}"
+                self.fit_results.append(FitResult.deserialize(h5_handle=h5_file, node=node_path))
+        else:
+            raise RuntimeError("No 'FitResults' group found")
+
+        # ---------- ModelAverage/KeysList ----------
+        self.keys_all = []
+        try:
+            keys = _read_ds(h5_file["ModelAverage/KeysList"])
+            if isinstance(keys, np.ndarray):
+                self.keys_all = keys.tolist()
+            elif np.isscalar(keys):
+                self.keys_all = [keys.item() if hasattr(keys, "item") else keys]
+            else:
+                # iterable but not str/bytes -> list; str -> wrap
+                self.keys_all = list(keys) if not isinstance(keys, (str, bytes)) else [keys]
+        except KeyError:
+            warnings.warn("No 'ModelAverage/KeysList' dataset found; leaving `keys_all` empty.", RuntimeWarning)
+
+        # ---------- ModelAverage/Parameters/<item>/<key> ----------
+        self.param_avg: Dict[str, Dict[str, Any]] = {}
+        try:
+            params_grp = h5_file["ModelAverage/Parameters"]
+            for item in params_grp.keys():
+                inner: Dict[str, Any] = {}
+                for key in params_grp[item].keys():
+                    inner[key] = _read_ds(params_grp[item][key])
+                self.param_avg[item] = inner
+        except KeyError:
+            warnings.warn("No 'ModelAverage/Parameters' group found; leaving `param_avg` empty.", RuntimeWarning)
+
+        # Optional: mirror your save-time guard as a load-time sanity note
+        if not self.fit_results:
+            warnings.warn(
+                f"No FitResults loaded. Ensure the HDF5 file contains groups like 'FitResults/Fit0', 'FitResults/Fit1', ...",
+                RuntimeWarning,
+            )
+
+
