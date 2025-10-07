@@ -14,6 +14,8 @@ import lsqfit
 
 import scipy.stats
 
+from scipy.special import gammaincc
+
 @dataclass
 class FitResult:
     """ToDo"""
@@ -438,7 +440,7 @@ class FitResult:
         return out
 
 
-    def calculate_AIC(self, chi2, small_sample_correction: bool = True):
+    def calculate_AIC(self, chi2, small_sample_correction: bool = False):
         r"""
             @param small_sample_correction: bool, flag to add/remove a small sample correction (default: False)
 
@@ -500,7 +502,7 @@ class FitResult:
     # import_from_FITTER(self, *args) -> None
     # and fill the fields defined above
 
-    def AIC_from_lsqfit(self, nlf: lsqfit.nonlinear_fit, augmented: bool = False, small_sample_correction: bool = True) -> float:
+    def AIC_from_lsqfit(self, nlf: lsqfit.nonlinear_fit, augmented: bool = False, small_sample_correction: bool = False) -> float:
         r"""
             @param nlt: lsqfit.nonlinear_fit, Fit result from lsqfit. It stores all relevant information to
                                                compute the AIC (see below)
@@ -669,9 +671,7 @@ class FitResult:
                 self.fcn = lambda x,p: x*p[parameter_names[0]]
 
         if self.dof is None:
-            self.dof = self.Ndata
-
-            
+            self.dof = self.Ndata - len(result_params)
 
         if nres is not None:
             # check that the dictionary is set and fillable
@@ -710,8 +710,10 @@ class FitResult:
             self.chi2_res[nres] = residuals.T @ weight_matrix @ residuals # no priors in this fit
             self.aug_chi2_res[nres] = self.chi2
 
-            F_statistic = (target_data.T @ weight_matrix @ target_data - residuals.T @ weight_matrix @ residuals) / 2 / (self.chi2/self.dof)
-            self.Q_value_res[nres] = 1 - scipy.stats.f.cdf(F_statistic, 2, self.dof)
+            #F_statistic = (target_data.T @ weight_matrix @ target_data - residuals.T @ weight_matrix @ residuals) / 2 / (self.chi2/self.dof)
+            #self.Q_value_res[nres] = 1 - scipy.stats.f.cdf(F_statistic, 2, self.dof)
+
+            self.Q_value_res[nres] = gammaincc(self.dof/2, self.chi2_res[nres]/2)
             
             self.AIC_res[nres] = self.calculate_AIC( self.chi2_res[nres], small_sample_correction=False )
             self.aug_AIC_res[nres] = self.AIC_res[nres]
@@ -747,8 +749,9 @@ class FitResult:
             self.chi2 = residuals.T @ weight_matrix @ residuals # no priors in this fit
             self.aug_chi2 = self.chi2
 
-            F_statistic = (target_data.T @ weight_matrix @ target_data - residuals.T @ weight_matrix @ residuals) / 2 / (self.chi2/self.dof)
-            self.Q_value = 1 - scipy.stats.f.cdf(F_statistic, 2, self.dof)
+            #F_statistic = (target_data.T @ weight_matrix @ target_data) / 2 / (self.chi2/self.dof)
+            #self.Q_value = scipy.stats.f.sf(F_statistic, 2, self.dof)
+            self.Q_value = gammaincc(self.dof/2, self.chi2/2)
 
             self.AIC = self.calculate_AIC( self.chi2, small_sample_correction=False)
             self.aug_AIC = self.AIC
