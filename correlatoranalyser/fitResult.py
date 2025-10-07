@@ -579,6 +579,8 @@ class FitResult:
 
         # if the degree of freedom hasn't been set we populate it here
         if self.dof is None:
+            # lsqfit defines the dof as 
+            # Ndata - Nparam + Nprior
             self.dof = nlf.dof
 
         # if nres is provided populate the resample fields at position nres
