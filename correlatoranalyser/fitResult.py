@@ -33,6 +33,9 @@ class FitResult:
     # number of data points used in the fit
     Ndata: int
 
+    # abscissa used in the fit
+    abscissa: np.ndarray | None = None
+
     # number of degrees of freedom
     dof: int | None = None
 
