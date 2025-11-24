@@ -391,16 +391,17 @@ class FitResult:
         te:int = h5_handle[f"{node}/te"][()]
         ts:int = h5_handle[f"{node}/ts"][()]
         Ndata:int = h5_handle[f"{node}/Ndata"][()]
+        abscissa:np.ndarray | None = h5_handle[f"{node}/abscissa"][()]
 
 
         # check if h5file contains bootstrap data:
         if "Nres" in h5_handle[node]:
             Nres:int = h5_handle[f"{node}/Nres"][()]
             
-            out = FitResult(te=te, ts=ts, Ndata=Ndata, Nres=Nres)
+            out = FitResult(te=te, ts=ts, Ndata=Ndata, abscissa=abscissa, Nres=Nres)
 
         else:
-            out = FitResult(te=te, ts=ts, Ndata=Ndata)
+            out = FitResult(te=te, ts=ts, Ndata=Ndata, abscissa=abscissa)
 
         # read in the data:
         for key in h5_handle[node]:
