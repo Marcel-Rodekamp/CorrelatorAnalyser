@@ -1,3 +1,9 @@
+# Class that organizes resampling
+# in particular bootstrap and jackknife
+from .data import Data 
+
+from .prior import Prior
+
 # Class that stores/organizes results of fits
 # result of fit(...)
 from .fitResult import FitResult
@@ -9,4 +15,5 @@ from .fitState import FitState
 from .fit import fit
 
 # A explicit linear regression
-from .linearRegression import linear_regression
+# After v1.0 this is implemented in the fit(backend='linear regression') method 
+#from .fit_linearRegression import linear_regression
