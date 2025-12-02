@@ -3,9 +3,10 @@ name = "correlatoranalyser"
 version = "0.1.0"
 description = ""
 authors = [
-    "Marcel Rodekamp <marcel.rodekamp@ur.de>",
     "Lea Kutsch <l.kutsch@fz-juelich.de>",
-    "Giovanni Pederiva <g.pederiva@fz-juelich.de>"
+    "Giovanni Pederiva <g.pederiva@fz-juelich.de>",
+    "Marcel Rodekamp <marcel.rodekamp@ur.de>",
+    "Emilio Taggi <e.taggi@fz-juelich.de>",
 ]
 readme = "README.md"
 
