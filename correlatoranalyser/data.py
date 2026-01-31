@@ -22,11 +22,9 @@ def is_broadcastable(*arrays: np.ndarray) -> bool:
         return False
     return True
 
-
 SEED:int = 88567
 np.random.seed(SEED)
 rng: Callable[[],np.random.Generator]  = lambda : np.random.default_rng(seed=SEED) 
-
 
 class Data:
     # The resample type: 'bst': bootstraps (with replacement), 'jkn': leave-1-out jackknife
@@ -44,6 +42,9 @@ class Data:
     # number of data points used to be resampled. May not be given  
     Ndata: int | None = None
 
+    # determins the size of each bin if the data is blocked before resample
+    blocksize: int | None = None
+
     # a string tag attached to the data set 
     tag: str | None = None
 
@@ -59,14 +60,14 @@ class Data:
     # and correlation / covariance similarly
     cache_field_names = ["_serr", "_cov", "_cor", "_StN"]
 
-    def __init__(self, resample_type:str, data:np.ndarray, mean:np.ndarray|Number|None=None, rwf:np.ndarray|None=None, Nresample:int|None=None, tag:str|None=None):
+    def __init__(self, resample_type:str, data:np.ndarray, mean:np.ndarray|Number|None=None, rwf:np.ndarray|None=None, Nresample:int|None=None, blocksize:int|None = None, tag:str|None=None):
         r"""
             param: 
                 - resample_type: str,               'bst' or 'jkn' for bootstrap or jackknife respectively
                 - data: np.ndarray,                 numpy array of the raw data which becomes resampled
                 - mean: np.ndarray|Number|None,     estimate of the central value. If None will be estimated from Data using arithmetic mean (default: None) 
                 - rwf: np.ndarray|None,             reweighting factors to be used as reweighted estimates <w O> / <w>. if None, no reweighting applied (default: None)
-                - Nresample: int|None,              Number of resamples; required if resample_type=='bst'. (default: None)  
+                - Nresample: int|None,              Number of resamples; required if resample_type=='bst'. (default: None)
                 - tag: str|None=None,               A string describing the resample data. (default: None)
         """
 
@@ -83,12 +84,12 @@ class Data:
 
         # resample data. These methods set self._rspl, self._rwf_rspl, self.Nresample
         if self.resample_type == 'jkn':
-            self.__jackknife(data=data,rwf=rwf)
+            self.__jackknife(data=data,rwf=rwf,blocksize=blocksize)
         elif self.resample_type == 'bst':
             if Nresample is None:
                 raise ValueError("Data with resample_type='bst' requires parameter Nbst:int")
             
-            self.__bootstrap(data=data, rwf=rwf, Nresample=Nresample)
+            self.__bootstrap(data=data, rwf=rwf, Nresample=Nresample, blocksize=blocksize)
         else:
             raise RuntimeError(f"Something went wrong initializing Data with:\n - resample_type={resample_type}\n - data={data}")
 
@@ -201,7 +202,7 @@ class Data:
             new._rspl = np.zeros((Nresample, *shape))
             new._mean = np.zeros((*shape,))
 
-        new.cache_field_names.append("_mean")
+        # new.cache_field_names.append("_mean")
 
         return new
 
@@ -473,7 +474,7 @@ class Data:
             # copy the data
             new._rspl = self._rspl.copy()
 
-            if isinstance(new._mean, np.ndarray): 
+            if isinstance(self._mean, np.ndarray): 
                 new._mean = self._mean.copy()
             else: 
                 new._mean = self._mean
@@ -493,14 +494,55 @@ class Data:
     # Resample techniques
     # =================================================================================================================
 
+    @staticmethod
+    def blocking(data:np.ndarray, blocksize:int, rwf:np.ndarray|None = None) -> tuple[np.ndarray,np.ndarray|None]:
+        # number of configurations
+        Ncfg:int = data.shape[0]
+        # number of blocks = Number of configs / size of each block 
+        Nblock:int = Ncfg // blocksize
+        # shape of the observable ignoring the configuration dimension
+        shape = data.shape[1:]
+        # output array
+        blocked_data = np.zeros((Nblock, *shape))
+
+        if rwf is None:
+            for k in range(Nblock):
+                if k < Nblock-1:
+                    blocked_data[k] = np.mean(data[k*blocksize:(k+1)*blocksize,...],axis=0) 
+                else:
+                    blocked_data[k] = np.mean(data[k*blocksize:,...],axis=0) 
+
+            return blocked_data, None
+
+            raise RuntimeError(f"blocking method must be 'block', 'skip' or None (null) but got {self.params['blocking method']}")
+            
+        else: # rwf is not None
+            data *= rwf[:, *(np.newaxis,)*len(shape)] 
+            
+            blocked_rwf  = np.zeros((Nblock))
+            for k in range(Nblock):
+                if k < Nblock-1:
+                    blocked_data[k] = np.mean(data[k*blocksize:(k+1)*blocksize,...],axis=0) 
+                    blocked_rwf[k]  = np.mean( rwf[k*blocksize:(k+1)*blocksize]    ,axis=0) 
+                else:
+                    blocked_data[k] = np.mean(data[k*blocksize:,...],axis=0) 
+                    blocked_rwf[k]  = np.mean( rwf[k*blocksize:]     ,axis=0) 
+
+            return blocked_data, blocked_rwf
+
     @ staticmethod
-    def jackknife(data:np.ndarray, rwf:np.ndarray|None = None) -> np.ndarray:
+    def jackknife(data:np.ndarray, rwf:np.ndarray|None = None, blocksize: int|None = None) -> np.ndarray:
         r"""
             param:
                 - data: np.ndarray,     numpy array of the raw data which is jackknifed 
                 - rwf: np.ndarray|None  reweighting factors to be used as reweighted estimates <w O> / <w>. if None, no reweighting applied (default: None)
             Perform a leave-one-out jackknife on the data. Data axis = 0 is assumed
         """
+
+        if blocksize is not None:
+            data, rwf = Data.blocking(data=data, blocksize=blocksize,rwf=rwf)
+        elif rwf is not None:
+            data *= rwf[:,*( (np.newaxis,)*(data.ndim-1) )]
 
         if rwf is None:
             # The jackknife is defined for all k = 0,1,2...,Ndata-1
@@ -517,11 +559,10 @@ class Data:
             # Which can be translated into 
             # jkn[k] = sum - rwf[k] data[k] / (<rwf>-rwf[k])
             # where sum = \sum_{n = 0}^{Ndata-1} rwf[n] dat[n]
-            tmp: np.ndarray | Number = data * rwf[:,*( (np.newaxis,)*(data.ndim-1) )]
-            data_sum: np.ndarray | Number = np.sum( tmp, axis = 0 )
-            return (data_sum - tmp) / ( np.sum(rwf, axis=0) - rwf )[:,*( (np.newaxis,)*(data.ndim-1) )]
+            data_sum: np.ndarray | Number = np.sum( data, axis = 0 )
+            return (data_sum - data) / ( np.sum(rwf, axis=0) - rwf )[:,*( (np.newaxis,)*(data.ndim-1) )]
 
-    def __jackknife(self, data:np.ndarray, rwf:np.ndarray|None = None) -> None:
+    def __jackknife(self, data:np.ndarray, rwf:np.ndarray|None = None, blocksize: int|None = None) -> None:
         r"""
             param:
                 - data: np.ndarray,                 numpy array of the raw data which becomes resampled
@@ -535,15 +576,15 @@ class Data:
             This method is intended to be used during __init__. If you simply want a jackknife of a numpy array please use 
             Data.jackknife(data=...,rwf=...)
         """
-        self._rspl     = Data.jackknife(data=data,rwf=rwf)
+        self._rspl     = Data.jackknife(data=data,rwf=rwf, blocksize=blocksize)
 
         if rwf is not None:
-            self._rwf_rspl = Data.jackknife(data=rwf)
+            self._rwf_rspl = Data.jackknife(data=rwf, blocksize=blocksize)
 
-        self.Nresample = data.shape[0]
+        self.Nresample = self._rspl.shape[0]
          
     @staticmethod
-    def bootstrap(data:np.ndarray, Nresample:int, rwf:np.ndarray|None = None, method: Callable[[np.ndarray], np.ndarray ] | None = None) -> np.ndarray:
+    def bootstrap(data:np.ndarray, Nresample:int, rwf:np.ndarray|None = None, blocksize:int|None = None, method: Callable[[np.ndarray], np.ndarray ] | None = None) -> np.ndarray:
         r"""
             param:
                 - data: np.ndarray,      numpy array of the raw data which is jackknifed 
@@ -558,15 +599,18 @@ class Data:
         # rng for this function. 
         _rng = rng()
 
-        # get the number of 
-        Ndata:int = data.shape[0]
-
         # check if method is provided
         if method is None:
             method = lambda x: np.mean(x, axis = 0) 
 
-        data_shape = data.shape
-        
+        if blocksize is not None:
+            data, rwf = Data.blocking(data=data, blocksize=blocksize,rwf=rwf)
+        elif rwf is not None:
+            data *= rwf[:,*( (np.newaxis,)*(data.ndim-1) )]
+
+        # get the number of 
+        Ndata:int = data.shape[0]
+
         if rwf is None:
             # explicitly run first bootstrap to identify shape of output
             sample_idx:np.ndarray = _rng.integers( 0, Ndata, size=Ndata)
@@ -583,7 +627,7 @@ class Data:
         else:
             # explicitly run first bootstrap to identify shape of output
             sample_idx:np.ndarray = _rng.integers( 0, Ndata, size=Ndata)
-            bst_tmp:np.ndarray = method( data[sample_idx] * rwf[sample_idx,*( (np.newaxis,)*(data.ndim-1) )] ) / np.mean(rwf[sample_idx],axis=0)
+            bst_tmp:np.ndarray = method( data[sample_idx] ) / np.mean(rwf[sample_idx],axis=0)
 
             # now we have all we need
             bst = np.empty( (Nresample, *bst_tmp.shape), dtype=bst_tmp.dtype )
@@ -592,11 +636,11 @@ class Data:
             # Now execute the remaining bootstraps
             for k in range(1,Nresample):
                 sample_idx:np.ndarray = _rng.integers( 0, Ndata, size=Ndata)
-                bst[k] = method(data[sample_idx] * rwf[sample_idx,*( (np.newaxis,)*(data.ndim-1) )] ) / np.mean(rwf[sample_idx],axis=0)
+                bst[k] = method(data[sample_idx]) / np.mean(rwf[sample_idx],axis=0)
 
         return bst
 
-    def __bootstrap(self, data: np.ndarray, Nresample:int, rwf:np.ndarray|None = None) -> None:
+    def __bootstrap(self, data: np.ndarray, Nresample:int, rwf:np.ndarray|None = None, blocksize:int| None = None) -> None:
         r"""
             param:
                 - data: np.ndarray,      numpy array of the raw data which becomes resampled
@@ -611,12 +655,13 @@ class Data:
             This method is intended to be used during __init__. If you simply want a bootstrap of a numpy array please use 
             Data.bootstrap(data=...,Nresample=...,rwf=...,method=...)
         """
-        self._rspl = Data.bootstrap(data=data,Nresample=Nresample,rwf=rwf)
+        self._rspl = Data.bootstrap(data=data,Nresample=Nresample,rwf=rwf,blocksize=blocksize)
 
         if rwf is not None:
-            self._rwf_rspl = Data.bootstrap(data=rwf,Nresample=Nresample)
+            self._rwf_rspl = Data.bootstrap(data=rwf,Nresample=Nresample,blocksize=blocksize)
 
         self.Nresample = Nresample
+        self.blocksize = blocksize
 
     @staticmethod
     def pseudoBootstrap(mean:float, sdev:float, Nresample:int, Ndata:int|None = None, tag:str|None = None) -> Any:
@@ -632,7 +677,6 @@ class Data:
         new.resample_type = "bst"
         new.Ndata = Ndata
         new.Nresample = Nresample
-
         new._rspl = new.get_rng().normal(mean,sdev,size=(Nresample,))
         new._mean = mean
         new._serr = sdev
@@ -669,9 +713,9 @@ class Data:
 
         # allow only same resample_type
         if isinstance(other,Data):
-            matches_flag = self.resample_type == other.resample_type 
-            if not matches_flag:
-                raise ValueError(f"other is expected to have same resample type ({self.resample_type}) but has: {other.resample_type}")
+            #matches_flag = self.resample_type == other.resample_type 
+            #if not matches_flag:
+            #    raise ValueError(f"other is expected to have same resample type ({self.resample_type}) but has: {other.resample_type}")
 
             # allow only same number of resample 
             matches_flag = self.Nresample == other.Nresample
@@ -696,6 +740,14 @@ class Data:
 
     def delete_cache(self):
         self.__delete_cached()
+
+    def imported(self) -> None:
+        self.delete_cache()
+
+        if hasattr(self,"_mean"):
+            delattr(self,"_mean")
+
+        self.mean
 
     # =================================================================================================================
     # Arithmetic overloads
@@ -760,7 +812,7 @@ class Data:
         else:
             raise NotImplemented
 
-        self.__delete_cached()
+        # self.__delete_cached()
 
         return self
 
@@ -1044,9 +1096,9 @@ class Data:
 
     @property
     def mean(self) -> np.ndarray|Number:
-        # elements of mean (inc case of array type array) may be replaced
-        if hasattr(self, "_mean"):
-            return self._mean
+        # # elements of mean (inc case of array type array) may be replaced
+        # if hasattr(self, "_mean"):
+        #     return self._mean
 
         self._mean:np.ndarray | Number = np.mean(self._rspl, axis=0)
         return self._mean
@@ -1087,10 +1139,10 @@ class Data:
 
     @property
     def serr(self) -> np.ndarray|Number:
-        # elements of serr may be replaced
-        # entire replacement of serr array is forbidden (unlike for mean) 
-        if hasattr(self,"_serr"):
-            return self._serr
+        # # elements of serr may be replaced
+        # # entire replacement of serr array is forbidden (unlike for mean) 
+        # if hasattr(self,"_serr"):
+        #     return self._serr
         
         if self.resample_type == 'jkn':
             self._serr = np.sqrt( (self.Nresample-1) ) * np.std( self._rspl, axis = 0 )
@@ -1105,8 +1157,8 @@ class Data:
 
     @property
     def cov(self) -> np.ndarray:
-        if hasattr(self,"_cov"):
-            return self._cov
+        # if hasattr(self,"_cov"):
+        #     return self._cov
 
         if len(self._rspl.shape) != 2:
             raise RuntimeError(f"Covariance estimation is only implemented for Data of shape (N, Nobs), with N being the number of resamples, but is: {self._rspl.shape}")
@@ -1133,8 +1185,8 @@ class Data:
 
     @property
     def cor(self) -> np.ndarray:
-        if hasattr(self,"_cor"):
-            return self._cor
+        # if hasattr(self,"_cor"):
+        #     return self._cor
 
         if len(self._rspl.shape) != 2:
             raise RuntimeError(f"Correlation estimation is only implemented for Data of shape (N, Nobs), with N being the number of resamples, but is: {self._rspl.shape}")
@@ -1164,8 +1216,8 @@ class Data:
 
     @property
     def StN(self) -> np.ndarray | Number:
-        if hasattr(self,"_StN"):
-            return self._StN
+        # if hasattr(self,"_StN"):
+        #     return self._StN
 
         if isinstance(self.mean, Number) or isinstance(self.serr, Number):
             if self.serr == 0:
@@ -1267,7 +1319,7 @@ class Data:
         # with 'known' keys
         return {
             "est": self.mean,
-            "err": self.sdev,
+            "err": self.serr,
             "res": self.rspl
         }
 
@@ -1278,7 +1330,7 @@ class Data:
         if node is None:
             grp = h5f
         else:
-            grp = h5f[node]
+            grp = h5f.create_group(node)
 
         grp.create_dataset("resample_type", data=self.resample_type)
         grp.create_dataset("mean", data=self._mean)
@@ -1326,18 +1378,38 @@ class Data:
 
     def __getitem__(self, idx: Any ) -> Self|np.ndarray|Number:
         if isinstance(idx, tuple):
+            # Resample of a single number may have a mean of a single float
+            # One might want to broadcast the resamples and thus expand the 
+            # dimensionality using np.newaxis/None
+            # In this case we want to expand the float to an array containing 
+            # a single number 
+            if (any((item is None) for item in idx)) and not isinstance(self._mean, np.ndarray) and hasattr(self, "_mean"):
+                mean_tmp = np.asarray(self._mean)[*idx]
+            elif hasattr(self, "_mean"):
+                mean_tmp = self._mean[*idx]
+            else:
+                mean_tmp = None
+
             return Data.import_resamples(
                 resample_type = self.resample_type,
                 rspl          = self._rspl[:, *idx],
-                mean          = self._mean[*idx],
+                mean          = mean_tmp,
                 Ndata         = self.Ndata,
                 Nresample     = self.Nresample,
             )
-        else: # try your luck 
+
+        else: # try your luckimport traceback as tb
+            if (idx is None or np.newaxis == idx) and not isinstance(self._mean, np.ndarray) and hasattr(self, "_mean"):
+                mean_tmp = np.asarray([self._mean])
+            elif hasattr(self, "_mean"):
+                mean_tmp = self._mean[idx]
+            else:
+                mean_tmp = None
+
             return Data.import_resamples(
                 resample_type = self.resample_type,
                 rspl          = self._rspl[:, idx],
-                mean          = self._mean[idx],
+                mean          = mean_tmp,
                 Ndata         = self.Ndata,
                 Nresample     = self.Nresample,
             )  
