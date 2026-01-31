@@ -172,7 +172,7 @@ class FitResult:
         if node is None:
             grp = h5_handle
         else:
-            grp = h5_handle[node]
+            grp = h5_handle.create_group(node)
 
         # Check that the fit result is actually computed
         if self.params is None:
@@ -195,7 +195,7 @@ class FitResult:
 
         # fcn: Callable | None = None
         if self.fcn is not None:
-            grp.create_dataset("fcn", data = dumps(self.fcn))
+            grp.create_dataset("fcn", data = dumps(self.fcn,0))
 
         # resample_type: str | None = None
         if self.resample_type is not None:
