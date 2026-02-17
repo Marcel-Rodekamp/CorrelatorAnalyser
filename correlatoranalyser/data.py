@@ -84,12 +84,12 @@ class Data:
 
         # resample data. These methods set self._rspl, self._rwf_rspl, self.Nresample
         if self.resample_type == 'jkn':
-            self.__jackknife(data=data,rwf=rwf,blocksize=blocksize)
+            self.__jackknife(data=np.copy(data),rwf=rwf,blocksize=blocksize)
         elif self.resample_type == 'bst':
             if Nresample is None:
                 raise ValueError("Data with resample_type='bst' requires parameter Nbst:int")
             
-            self.__bootstrap(data=data, rwf=rwf, Nresample=Nresample, blocksize=blocksize)
+            self.__bootstrap(data=np.copy(data), rwf=rwf, Nresample=Nresample, blocksize=blocksize)
         else:
             raise RuntimeError(f"Something went wrong initializing Data with:\n - resample_type={resample_type}\n - data={data}")
 
@@ -526,7 +526,7 @@ class Data:
                     blocked_rwf[k]  = np.mean( rwf[k*blocksize:(k+1)*blocksize]    ,axis=0) 
                 else:
                     blocked_data[k] = np.mean(data[k*blocksize:,...],axis=0) 
-                    blocked_rwf[k]  = np.mean( rwf[k*blocksize:]     ,axis=0) 
+                    blocked_rwf[k]  = np.mean( rwf[k*blocksize:]    ,axis=0) 
 
             return blocked_data, blocked_rwf
 
