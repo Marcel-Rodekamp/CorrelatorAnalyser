@@ -121,7 +121,7 @@ def fit_lsqfit(
     # The organization of resample_ordinate_est.shape = Nres, Nt, ...
     # i.e. the second axis must match the first axis of abscissa. 
     # Further, dimensions are ignored and must be handled by the fit model
-    if ordinate.shape != abscissa.shape:
+    if ordinate.shape[0] != abscissa.shape[0]:
         raise ValueError(f"Expecting ordinate shape ({ordinate.shape}) to match abscissa shape ({abscissa.shape})")
     
     # Check the existence of the model function
