@@ -92,14 +92,16 @@ class FitResult:
         if abscissa is None:
             # if abscissa not provided we use a linear space with 5 interval length of the original fit interval
             abscissa = self.abscissa
+
+        mean = self.fcn( abscissa, {key: self.params[key].mean for key in self.params.keys()} )
         
         out = Data.zeros(
             resample_type=self.resample_type,
-            shape = abscissa.shape,
+            shape = mean.shape,
             Nresample = self.Nresample,
         )
 
-        out.mean = self.fcn( abscissa, {key: self.params[key].mean for key in self.params.keys()} )
+        out.mean = mean
         for nres in range(self.Nresample):
             out.rspl[nres] = self.fcn( abscissa, {key: self.params[key].rspl[nres] for key in self.params.keys()} )
 
@@ -155,7 +157,7 @@ class FitResult:
         # Fit parameters
         for key, p in self.params.items():
             if bool(self.priors):
-                rep+= f"    - {key}: {p.gvar()}  [{self.priors[key].gvar()}]\n"
+                rep+= f"    - {key}: {p.gvar()}  [{self.priors[key]}]\n"
             else:
                 rep+= f"    - {key}: {p.gvar()} \n"
 
@@ -248,15 +250,14 @@ class FitResult:
             grp = h5_handle[node]
 
         abscissa = grp[f"abscissa"][()]
-        Ndata:int = grp[f"Ndata"][()]
 
         # check if h5file contains bootstrap data:
         if "Nresample" in grp:
             Nresample:int = grp[f"Nresample"][()]
-            resample_type:str = grp[f"resample_type"][()]
-            out = FitResult(abscissa=abscissa, Ndata=Ndata, resample_type=resample_type, Nresample=Nresample)
+            resample_type:str = grp[f"resample_type"][()].decode('utf-8')
+            out = FitResult(abscissa=abscissa, resample_type=resample_type, Nresample=Nresample)
         else:
-            out = FitResult(abscissa=abscissa, Ndata=Ndata)
+            out = FitResult(abscissa=abscissa)
 
         # abscissa: np.ndarray | Data 
         if "abscissa" in grp:
@@ -264,9 +265,6 @@ class FitResult:
                 setattr(out, "abscissa", grp["abscissa"][()])
             else:
                 setattr(out, "abscissa", Data.deserialize(grp,node="abscissa"))
-
-        # Ndata: int == len(abscissa)
-        setattr(out, "Ndata", grp["Ndata"][()])
 
         # dof: int | None = None 
         if "dof" in grp:
@@ -476,7 +474,13 @@ class FitResult:
                     if nlf.prior is not None:
                         # if key_red not in self.priors:
                         #     self.priors[key_red] = Data.empty(resample_type = self.resample_type, shape=None, Nresample=self.Nresample, dtype=object)
-                        self.priors[key_red] = Prior.import_from_lsqfit(nlf.prior)[key]
+                        try:
+                            self.priors[key_red] = Prior.import_from_lsqfit(nlf.prior)[key_red]
+                        except KeyError as e:
+                            print( Prior.import_from_lsqfit(nlf.prior) )
+                            print(nlf.prior)
+                            raise e
+
 
                 else:
                     if key not in self.params.keys():
