@@ -45,7 +45,7 @@ def construct_uncorrelated_least_square(abscissa, y_data, sdev_inv, model, param
         def cost(*args):
             predi = model(abscissa, dict(zip(param_names,args)))
             delta = y_data - predi
-            # prior = sum( [ priors[key](args[key]) for key in priors.keys() ] )
+
             prior = sum( [ priors[key](args[param_id]) for param_id,key in enumerate(priors.keys()) ] )
 
             return sum((delta*sdev_inv)**2) + prior
@@ -69,7 +69,12 @@ def execute_fit(fit_args: list[dict] | dict, nres: list[int] | None) -> dict:
                 fit_args["least_square"],
                 **fit_args["p0"],
                 name=list(fit_args["p0"].keys()),
-            ).migrad()
+            )
+            # Possible stability parameters
+            # minuit.tol = 1e-16
+            # minuit.precision = 1e-16
+            # minuit.strategy = 2
+            minuit.migrad()
             out_dict["minuit"] = minuit
 
         except Exception as e:
@@ -83,7 +88,13 @@ def execute_fit(fit_args: list[dict] | dict, nres: list[int] | None) -> dict:
                     fit_args[res_id]["least_square"],
                     **fit_args[res_id]["p0"],
                     name=list(fit_args[res_id]["p0"].keys()),
-                ).migrad()
+                )
+
+                # Possible stability parameters
+                # minuit.tol = 1e-16
+                # minuit.precision = 1e-16
+                # minuit.strategy = 2
+                minuit.migrad()
                 out_dict["minuit"][res_id] = minuit
 
             except Exception as e:
@@ -165,8 +176,8 @@ def fit_iminuit(
     # The organization of resample_ordinate_est.shape = Nres, Nt, ...
     # i.e. the second axis must match the first axis of abscissa. 
     # Further, dimensions are ignored and must be handled by the fit model
-    if ordinate.shape != abscissa.shape:
-        raise ValueError(f"Expecting ordinate shape ({ordinate.shape}) to match abscissa shape ({abscissa.shape})")
+    if ordinate.shape[0] != abscissa.shape[0]:
+        raise ValueError(f"Expecting ordinate shape ({ordinate.shape}) to match abscissa shape ({abscissa.shape[0]})")
     
     # Check the existence of the model function
     if model is None:
@@ -334,9 +345,10 @@ def fit_iminuit(
 
         if Nrest > 0:
             res_slice = np.s_[ Nblock*blockSize: ]
-            inputs.append(
+            inputs.append((
                 args[res_slice], # list of dicts: fit_args 
                 np.arange(Nres)[res_slice].tolist(), # list of resample ids: nres
+                )
             )
 
         with mp.Pool(processes=Nproc) as pool:
@@ -352,7 +364,7 @@ def fit_iminuit(
                     continue
 
                 try:
-                    fit_result.import_from_iminuit(out_dict["minuit"][nres],Ndata=np.prod(ordinate.shape),prior=prior,model=model,nres=nres)
+                    fit_result.import_from_iminuit(result["minuit"][res_id],Ndata=np.prod(ordinate.shape),prior=prior,model=model,nres=nres)
                 except Exception as e:
                     errors.append((nres, f"import_from_iminuit failed for nres={nres}: {e}"))
 
