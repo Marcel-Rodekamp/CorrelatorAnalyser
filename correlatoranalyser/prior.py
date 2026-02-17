@@ -23,6 +23,7 @@ class Prior:
                 f"dist must be one of:\n"
                +f"    - 'normal': normal distribution\n"
                +f"    - 'log-normal', 'log': log-normal distribution\n"
+               +f"But is: {dist}"
             )
 
     def gvar(self):
@@ -38,6 +39,8 @@ class Prior:
         return ((theta - self.mean)/self.sdev)**2
 
     def log_normal(self,theta:float) -> float:
+        if theta <= 0:
+            raise RuntimeError(f"found {theta=} <= 0 in log-normal distribution: {self}")
         return ((np.log(theta) - self.mean)/self.sdev)**2
 
     def __call__(self, theta:float) -> float:
@@ -50,8 +53,8 @@ class Prior:
         out:dict[str,Self] = {}
         for key, value in prior.items():
             if 'log' in key:
-                key_ = key[3:-1]
-                out[key_] = Prior( mean = gv.mean(value), sdev=gv.sdev(value), dist='log-normal' ) 
+                key_ = key[4:-1]
+                out[key_] = Prior( mean = gv.exp(gv.mean(value)), sdev=gv.sdev(value), dist='log-normal' ) 
             else:
                 out[key] = Prior( mean = gv.mean(value), sdev=gv.sdev(value), dist='normal' ) 
 
@@ -61,6 +64,8 @@ class Prior:
         if node is None:
             grp = h5f
         else:
+            if node not in h5f:
+                h5f.create_group(node)    
             grp = h5f[node]
 
         grp.create_dataset("mean", data=self.mean)
@@ -75,18 +80,18 @@ class Prior:
             grp = h5f[node]
 
         new:Prior = Prior(
-            mean=grp["mean"],
-            sdev=grp["sdev"],
-            dist=grp["dist"],
+            mean=grp["mean"][()],
+            sdev=grp["sdev"][()],
+            dist=grp["dist"][()].decode('utf-8'),
         )
 
         return new
 
     def __repr__(self):
         if self.dist == "normal":
-            return f"N[μ={self.mean}, σ={self.sdev}]"
+            return f"N[μ={self.mean:g}, σ={self.sdev:g}]"
         else:
-            return f"logN[μ={self.mean}, σ={self.sdev}]"
+            return f"logN[μ={self.mean:g}, σ={self.sdev:g}]"
 
 
         
