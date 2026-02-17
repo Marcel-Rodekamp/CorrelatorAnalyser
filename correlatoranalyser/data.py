@@ -148,7 +148,7 @@ class Data:
         return new
 
     @staticmethod
-    def zeros(resample_type:str, shape: tuple[int] | None = None, Ndata:int|None = None, Nresample:int|None = None, tag:str | None = None) -> Self:
+    def zeros(resample_type:str, shape: tuple[int] | None = None, Ndata:int|None = None, Nresample:int|None = None, tag:str | None = None, **array_kwargs) -> Self:
         r"""
             param: 
                 - resample_type: str,               'bst' or 'jkn' for bootstrap or jackknife respectively
@@ -196,11 +196,11 @@ class Data:
 
         # if shape not provided assume one dimensional data
         if shape is None:
-            new._rspl = np.zeros((Nresample,))
+            new._rspl = np.zeros((Nresample,), **array_kwargs)
             new._mean = 0
         else:
-            new._rspl = np.zeros((Nresample, *shape))
-            new._mean = np.zeros((*shape,))
+            new._rspl = np.zeros((Nresample, *shape), **array_kwargs)
+            new._mean = np.zeros((*shape,), **array_kwargs)
 
         # new.cache_field_names.append("_mean")
 
