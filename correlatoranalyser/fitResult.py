@@ -93,12 +93,16 @@ class FitResult:
             # if abscissa not provided we use a linear space with 5 interval length of the original fit interval
             abscissa = self.abscissa
 
-        mean = self.fcn( abscissa, {key: self.params[key].mean for key in self.params.keys()} )
-        
+        mean = self.fcn( abscissa, {key: self.params[key].mean for key in self.params.keys()} ).astype(float)
+
         out = Data.zeros(
             resample_type=self.resample_type,
             shape = mean.shape,
             Nresample = self.Nresample,
+            # locked_mean allows to fix the value of the mean using the setter function params[key].mean
+            # such that the getter function params[key].mean does not recompute the mean from the 
+            # resamples (as per default)
+            locked_mean = True,
         )
 
         out.mean = mean
@@ -131,10 +135,14 @@ class FitResult:
             if self.Nresample is None:
                 raise RuntimeError(f"Nresample not provided even though resample_type={self.resample_type}")
 
-        self.chi2       = Data.empty(resample_type = self.resample_type, shape=None, Nresample=self.Nresample)
-        self.p_value    = Data.empty(resample_type = self.resample_type, shape=None, Nresample=self.Nresample)
-        self.AIC        = Data.empty(resample_type = self.resample_type, shape=None, Nresample=self.Nresample)
+        self.chi2       = Data.empty(resample_type = self.resample_type, shape=None, Nresample=self.Nresample, locked_mean=True)
+        self.p_value    = Data.empty(resample_type = self.resample_type, shape=None, Nresample=self.Nresample, locked_mean=True)
+        self.AIC        = Data.empty(resample_type = self.resample_type, shape=None, Nresample=self.Nresample, locked_mean=True)
         self.priors     = {}
+
+        # this is only added for testing purpose, will not be serialized!
+        # not all fitters set this!
+        self.number_function_calls = None
 
     def __repr__(self) -> str:
         r"""
@@ -156,7 +164,7 @@ class FitResult:
         
         # Fit parameters
         for key, p in self.params.items():
-            if bool(self.priors):
+            if key in self.priors:
                 rep+= f"    - {key}: {p.gvar()}  [{self.priors[key]}]\n"
             else:
                 rep+= f"    - {key}: {p.gvar()} \n"
@@ -411,7 +419,11 @@ class FitResult:
                         self.params[key_red] = Data.empty( 
                             resample_type=self.resample_type, 
                             shape = None, #each parameter is a one-dimensional object hence no additional shape
-                            Nresample=self.Nresample
+                            Nresample=self.Nresample,
+                            # locked_mean allows to fix the value of the mean using the setter function params[key].mean
+                            # such that the getter function params[key].mean does not recompute the mean from the 
+                            # resamples (as per default)
+                            locked_mean = True 
                         )
 
                     # extract the parameter and exponentiate it
@@ -428,7 +440,11 @@ class FitResult:
                         self.params[key] = Data.empty( 
                             resample_type=self.resample_type, 
                             shape = None, #each parameter is a one-d object hence no additional shape
-                            Nresample=self.Nresample
+                            Nresample=self.Nresample,
+                            # locked_mean allows to fix the value of the mean using the setter function params[key].mean
+                            # such that the getter function params[key].mean does not recompute the mean from the 
+                            # resamples (as per default)
+                            locked_mean = True 
                         )
 
                     # extract the parameter
@@ -465,11 +481,15 @@ class FitResult:
                         self.params[key_red] = Data.empty( 
                             resample_type=self.resample_type, 
                             shape = None, #each parameter is a one-dimensional object hence no additional shape
-                            Nresample=self.Nresample
+                            Nresample=self.Nresample,
+                            # locked_mean allows to fix the value of the mean using the setter function params[key].mean
+                            # such that the getter function params[key].mean does not recompute the mean from the 
+                            # resamples (as per default)
+                            locked_mean = True 
                         )
 
                     # extract the parameter and exponentiate it
-                    self.params[key_red].mean = gv.mean(np.exp(nlf.p[key]))
+                    self.params[key_red].mean = np.exp(gv.mean(nlf.p[key]))
 
                     if nlf.prior is not None:
                         # if key_red not in self.priors:
@@ -487,7 +507,11 @@ class FitResult:
                         self.params[key] = Data.empty( 
                             resample_type=self.resample_type, 
                             shape = None, #each parameter is a one-dimensional object hence no additional shape
-                            Nresample=self.Nresample
+                            Nresample=self.Nresample,
+                            # locked_mean allows to fix the value of the mean using the setter function params[key].mean
+                            # such that the getter function params[key].mean does not recompute the mean from the 
+                            # resamples (as per default)
+                            locked_mean = True 
                         )
 
                     # extract the parameter
@@ -532,7 +556,11 @@ class FitResult:
                     self.params[key] = Data.empty( 
                         resample_type = self.resample_type, 
                         shape         = None, #each parameter is a one-dimensional object hence no additional shape
-                        Nresample     = self.Nresample
+                        Nresample     = self.Nresample,
+                        # locked_mean allows to fix the value of the mean using the setter function params[key].mean
+                        # such that the getter function params[key].mean does not recompute the mean from the 
+                        # resamples (as per default)
+                        locked_mean = True 
                     )
                     
                 self.params[key].rspl[nres] = result_params[key_id]
@@ -560,7 +588,11 @@ class FitResult:
                     self.params[key] = Data.empty( 
                         resample_type = self.resample_type, 
                         shape         = None, #each parameter is a one-dimensional object hence no additional shape
-                        Nresample     = self.Nresample
+                        Nresample     = self.Nresample,
+                        # locked_mean allows to fix the value of the mean using the setter function params[key].mean
+                        # such that the getter function params[key].mean does not recompute the mean from the 
+                        # resamples (as per default)
+                        locked_mean = True 
                     )
                     
                 self.params[key].mean = result_params[key_id]
@@ -575,13 +607,7 @@ class FitResult:
             self.prior = None
         # end else
 
-    def import_from_iminuit(self, 
-        minuit: Any, 
-        Ndata: int, 
-        model: Callable, 
-        prior: dict[str|Prior] | None, 
-        nres: None | int = None
-    ) -> None:
+    def import_from_iminuit(self, minuit: Any, Ndata: int, model: Callable, variable_projection: dict[str,float] | None = None,prior: dict[str,Prior] | None = None, nres: None | int = None) -> None:
         """
             @param nlf: lsqfit.nonlinear_fit, lsqfit fit result. 
             @param nres: int, resample ID imports the fit result into the resample arrays at position nres. If none, the central value fit fields
@@ -597,7 +623,13 @@ class FitResult:
             if prior is None:
                 self.dof = Ndata - len(minuit.params)
             else:
-                self.dof = Ndata - len(minuit.params) + len(prior.keys())
+                self.dof = Ndata - len(minuit.params) + len(prior.keys()) 
+
+            if variable_projection is not None:
+                # linear parameters are dependend on the non-linear ones,
+                # should they count as dof? If not comment:
+                self.dof -= len(variable_projection)
+                # pass
                 
 
         # if nres is provided populate the resample fields at position nres
@@ -615,7 +647,11 @@ class FitResult:
                     self.params[key] = Data.empty( 
                         resample_type=self.resample_type, 
                         shape = None, #each parameter is a one-d object hence no additional shape
-                        Nresample=self.Nresample
+                        Nresample=self.Nresample,
+                        # locked_mean allows to fix the value of the mean using the setter function params[key].mean
+                        # such that the getter function params[key].mean does not recompute the mean from the 
+                        # resamples (as per default)
+                        locked_mean = True 
                     )
 
                 # extract the parameter
@@ -625,6 +661,23 @@ class FitResult:
                 #     if key not in self.priors:
                 #         self.priors[key] = Data.empty(resample_type = self.resample_type, shape=None, Nresample=self.Nresample, dtype=object)
                 #     self.priors[key].rspl[nres] = prior
+
+            if variable_projection is not None:
+                for key, param in variable_projection.items():  
+                    # check if the resample array exists. If not set it
+                    if key not in self.params.keys():
+                        self.params[key] = Data.empty( 
+                            resample_type=self.resample_type, 
+                            shape = None, #each parameter is a one-d object hence no additional shape
+                            Nresample=self.Nresample,
+                            # locked_mean allows to fix the value of the mean using the setter function params[key].mean
+                            # such that the getter function params[key].mean does not recompute the mean from the 
+                            # resamples (as per default)
+                            locked_mean = True 
+                        )
+
+                    # extract the parameter
+                    self.params[key].rspl[nres] = param
 
             # Extract fit statistics
             self.chi2.rspl[nres] = minuit.fval
@@ -637,6 +690,9 @@ class FitResult:
             if not bool(self.params):
                 self.params = {}
 
+            # this is only added for testing purpose, will not be serialized!
+            self.number_function_calls = minuit.nfcn
+
             # loop over all fit parameter keys
             for param in minuit.params:
                 key = param.name 
@@ -645,7 +701,11 @@ class FitResult:
                     self.params[key] = Data.empty( 
                         resample_type=self.resample_type, 
                         shape = None, #each parameter is a one-dimensional object hence no additional shape
-                        Nresample=self.Nresample
+                        Nresample=self.Nresample,
+                        # locked_mean allows to fix the value of the mean using the setter function params[key].mean
+                        # such that the getter function params[key].mean does not recompute the mean from the 
+                        # resamples (as per default)
+                        locked_mean = True 
                     )
 
                 # extract the parameter
@@ -655,6 +715,23 @@ class FitResult:
                     # if key not in self.priors:
                     #     self.priors[key] = Data.empty(resample_type = self.resample_type, shape=None, Nresample=self.Nresample, dtype=object)
                     self.priors[key] = prior[key]
+
+            if variable_projection is not None:
+                for key, param in variable_projection.items():  
+                    # check if the resample array exists. If not set it
+                    if key not in self.params.keys():
+                        self.params[key] = Data.empty( 
+                            resample_type=self.resample_type, 
+                            shape = None, #each parameter is a one-d object hence no additional shape
+                            Nresample=self.Nresample,
+                            # locked_mean allows to fix the value of the mean using the setter function params[key].mean
+                            # such that the getter function params[key].mean does not recompute the mean from the 
+                            # resamples (as per default)
+                            locked_mean = True 
+                        )
+
+                    # extract the parameter
+                    self.params[key].mean = param
 
             # Extract fit statistics
             self.chi2.mean = minuit.fval

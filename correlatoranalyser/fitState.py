@@ -46,12 +46,17 @@ class FitState:
     # collection of keys in the state
     keys_all: list[str] = field(default_factory=list[str])
 
+    sort_by_chi2_dof: bool = True
+
     def append(self, new_fit: FitResult) -> None:
         self.fit_results.append(new_fit)
 
         new_keys = list(new_fit.params.keys())
         self.keys_all += [key for key in new_keys if key not in self.keys_all]
-        self.fit_results.sort(key=lambda x: x.AIC.mean)  # sort by AIC
+        if self.sort_by_chi2_dof:
+            self.fit_results.sort(key=lambda x: x.chi2.mean/x.dof)  # sort by chi2
+        else:
+            self.fit_results.sort(key=lambda x: x.AIC.mean)  # sort by AIC
 
         return
 

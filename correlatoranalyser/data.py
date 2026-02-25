@@ -54,13 +54,12 @@ class Data:
     # for error of error analysis a inner bootstrap is executed using this number of samples
     Nbst_inner: int = 100
 
-    # we may cache (standard) covariances / statistical error / correlation or signal to noise estimates
-    # after respective methods are called first time 
-    # the term standard refers to the usual construction of standard error (std(bst), sqrt(N-1)std(jkn)) 
-    # and correlation / covariance similarly
-    cache_field_names = ["_serr", "_cov", "_cor", "_StN"]
+    # determine weather DATA.mean recomputes the mean over resamples
+    # or simply returns the ._mean
+    locked_mean:bool = False
 
-    def __init__(self, resample_type:str, data:np.ndarray, mean:np.ndarray|Number|None=None, rwf:np.ndarray|None=None, Nresample:int|None=None, blocksize:int|None = None, tag:str|None=None):
+
+    def __init__(self, resample_type:str, data:np.ndarray, mean:np.ndarray|Number|None=None, rwf:np.ndarray|None=None, Nresample:int|None=None, blocksize:int|None = None, tag:str|None=None, locked_mean:bool = False):
         r"""
             param: 
                 - resample_type: str,               'bst' or 'jkn' for bootstrap or jackknife respectively
@@ -105,11 +104,13 @@ class Data:
         # finally set tag
         self.tag = tag
 
+        self.locked_mean = locked_mean
+
     # =================================================================================================================
     # Factories
     # =================================================================================================================
     @staticmethod
-    def import_resamples(resample_type:str, rspl:np.ndarray, mean: np.ndarray|Number|None = None, rwf_rspl:np.ndarray|None=None, Ndata:int|None = None, Nresample:int|None = None, tag:str | None = None) -> Self:
+    def import_resamples(resample_type:str, rspl:np.ndarray, mean: np.ndarray|Number|None = None, rwf_rspl:np.ndarray|None=None, Ndata:int|None = None, Nresample:int|None = None, tag:str | None = None, locked_mean:bool = False) -> Self:
         r"""
             param: 
                 - resample_type: str,               'bst' or 'jkn' for bootstrap or jackknife respectively
@@ -123,6 +124,8 @@ class Data:
         new:Data = Data.__new__(Data)
         new.tag = tag
         new.resample_type = resample_type
+
+        new.locked_mean = locked_mean
 
         # Import from resampled data
         new._rspl = rspl
@@ -148,7 +151,7 @@ class Data:
         return new
 
     @staticmethod
-    def zeros(resample_type:str, shape: tuple[int] | None = None, Ndata:int|None = None, Nresample:int|None = None, tag:str | None = None, **array_kwargs) -> Self:
+    def zeros(resample_type:str, shape: tuple[int] | None = None, Ndata:int|None = None, Nresample:int|None = None, tag:str | None = None, locked_mean:bool = False, **array_kwargs) -> Self:
         r"""
             param: 
                 - resample_type: str,               'bst' or 'jkn' for bootstrap or jackknife respectively
@@ -193,6 +196,8 @@ class Data:
 
         # fill in the number of resamples
         new.Nresample = Nresample
+
+        new.locked_mean = locked_mean
 
         # if shape not provided assume one dimensional data
         if shape is None:
@@ -202,12 +207,10 @@ class Data:
             new._rspl = np.zeros((Nresample, *shape), **array_kwargs)
             new._mean = np.zeros((*shape,), **array_kwargs)
 
-        # new.cache_field_names.append("_mean")
-
         return new
 
     @staticmethod
-    def ones(resample_type:str, shape: tuple[int] | None = None, Ndata:int|None = None, Nresample:int|None = None, tag:str | None = None) -> Self:
+    def ones(resample_type:str, shape: tuple[int] | None = None, Ndata:int|None = None, Nresample:int|None = None, tag:str | None = None, locked_mean:bool = False) -> Self:
         r"""
             param: 
                 - resample_type: str,               'bst' or 'jkn' for bootstrap or jackknife respectively
@@ -252,6 +255,8 @@ class Data:
 
         # fill in the number of resamples
         new.Nresample = Nresample
+
+        new.locked_mean = locked_mean
 
         # if shape not provided assume one dimensional data
         if shape is None:
@@ -261,12 +266,10 @@ class Data:
             new._rspl = np.ones((Nresample, *shape))
             new._mean = np.ones((*shape,))
 
-        new.cache_field_names.append("_mean")
-
         return new
 
     @staticmethod
-    def empty(resample_type:str, shape: tuple[int] | None = None, Ndata:int|None = None, Nresample:int|None = None, tag:str | None = None, **kwargs) -> Self:
+    def empty(resample_type:str, shape: tuple[int] | None = None, Ndata:int|None = None, Nresample:int|None = None, tag:str | None = None, locked_mean:bool = False, **kwargs) -> Self:
         r"""
             param: 
                 - resample_type: str,               'bst' or 'jkn' for bootstrap or jackknife respectively
@@ -311,6 +314,8 @@ class Data:
 
         # fill in the number of resamples
         new.Nresample = Nresample
+
+        new.locked_mean = locked_mean
 
         # if shape not provided assume one dimensional data
         if shape is None:
@@ -323,7 +328,7 @@ class Data:
         return new
 
     @staticmethod
-    def zeros_like(other:Self, copy_rwf:bool = True) -> Self:
+    def zeros_like(other:Self, copy_rwf:bool = True, locked_mean:bool = False) -> Self:
         r"""
             param 
                 - other: Data or np.ndarray, Create a Data instance filled with zeros and all other properties deduced from other 
@@ -345,6 +350,8 @@ class Data:
 
         # copy number of resamples 
         new.Nresample = other.Nresample
+
+        new.locked_mean = locked_mean
 
         # copy reweighting factors of provided 
         if other._rwf_rspl is None:
@@ -366,7 +373,7 @@ class Data:
         return new
 
     @staticmethod
-    def empty_like(other:Self, copy_rwf:bool = True) -> Self:
+    def empty_like(other:Self, copy_rwf:bool = True, locked_mean:bool = False) -> Self:
         r"""
             param 
                 - other: Data or np.ndarray, Create a Data instance filled with zeros and all other properties deduced from other 
@@ -389,6 +396,8 @@ class Data:
         # copy number of resamples 
         new.Nresample = other.Nresample
 
+        new.locked_mean = locked_mean
+
         # copy reweighting factors of provided 
         if other._rwf_rspl is None:
             new._rwf_rspl = None
@@ -409,7 +418,7 @@ class Data:
         return new
 
     @staticmethod
-    def full_like(other:Self, value:Number, copy_rwf:bool = True) -> Self:
+    def full_like(other:Self, value:Number, copy_rwf:bool = True, locked_mean:bool = False) -> Self:
         r"""
             param 
                 - other: Data or np.ndarray, Create a Data instance filled with zeros and all other properties deduced from other 
@@ -684,7 +693,6 @@ class Data:
         # to prevent overwriting of _serr on first call of new.serr() 
         # remove the _serr field from the caching. This way, new.serr()
         # will always simply return this value here
-        # new.cache_field_names.remove('_serr')
 
         return new
     
@@ -732,22 +740,6 @@ class Data:
         elif isinstance(other,Number):
             # you can always interact with a number
             pass 
-
-    def __delete_cached(self):
-        for attr in self.cache_field_names:
-            if hasattr(self,attr):
-                delattr(self,attr)
-
-    def delete_cache(self):
-        self.__delete_cached()
-
-    def imported(self) -> None:
-        self.delete_cache()
-
-        if hasattr(self,"_mean"):
-            delattr(self,"_mean")
-
-        self.mean
 
     # =================================================================================================================
     # Arithmetic overloads
@@ -812,8 +804,6 @@ class Data:
         else:
             raise NotImplemented
 
-        # self.__delete_cached()
-
         return self
 
     def __sub__(self, other:Self|np.ndarray|Number) -> Self:
@@ -873,8 +863,6 @@ class Data:
             self._mean = np.mean(self._rspl,axis=0)
         else:
             raise NotImplemented
-
-        self.__delete_cached()
 
         return self
 
@@ -936,9 +924,6 @@ class Data:
         else:
             raise NotImplemented
 
-
-        self.__delete_cached()
-
         return self
 
     def __truediv__(self, other:Self|np.ndarray|Number) -> Self:
@@ -998,8 +983,6 @@ class Data:
             self._mean = np.mean(self._rspl,axis=0)
         else:
             raise NotImplemented
-
-        self.__delete_cached()
 
         return self
 
@@ -1096,9 +1079,8 @@ class Data:
 
     @property
     def mean(self) -> np.ndarray|Number:
-        # # elements of mean (inc case of array type array) may be replaced
-        # if hasattr(self, "_mean"):
-        #     return self._mean
+        if self.locked_mean:
+            return self._mean
 
         self._mean:np.ndarray | Number = np.mean(self._rspl, axis=0)
         return self._mean
@@ -1139,11 +1121,6 @@ class Data:
 
     @property
     def serr(self) -> np.ndarray|Number:
-        # # elements of serr may be replaced
-        # # entire replacement of serr array is forbidden (unlike for mean) 
-        # if hasattr(self,"_serr"):
-        #     return self._serr
-        
         if self.resample_type == 'jkn':
             self._serr = np.sqrt( (self.Nresample-1) ) * np.std( self._rspl, axis = 0 )
             # or equivalently 
@@ -1157,9 +1134,6 @@ class Data:
 
     @property
     def cov(self) -> np.ndarray:
-        # if hasattr(self,"_cov"):
-        #     return self._cov
-
         if len(self._rspl.shape) != 2:
             raise RuntimeError(f"Covariance estimation is only implemented for Data of shape (N, Nobs), with N being the number of resamples, but is: {self._rspl.shape}")
 
@@ -1185,9 +1159,6 @@ class Data:
 
     @property
     def cor(self) -> np.ndarray:
-        # if hasattr(self,"_cor"):
-        #     return self._cor
-
         if len(self._rspl.shape) != 2:
             raise RuntimeError(f"Correlation estimation is only implemented for Data of shape (N, Nobs), with N being the number of resamples, but is: {self._rspl.shape}")
 
@@ -1216,9 +1187,6 @@ class Data:
 
     @property
     def StN(self) -> np.ndarray | Number:
-        # if hasattr(self,"_StN"):
-        #     return self._StN
-
         if isinstance(self.mean, Number) or isinstance(self.serr, Number):
             if self.serr == 0:
                 self._StN:np.ndarray | Number = np.inf
@@ -1293,10 +1261,13 @@ class Data:
 
         repr+= f"[{self.resample_type}"
 
+        if self.locked_mean:
+            repr+="-locked mean"
+
         if self._rspl is None or self.Nresample is None:
             repr+= ", unset"
         else:
-            repr+= f",  Nresample={self.Nresample}"
+            repr+= f", Nresample={self.Nresample}"
 
         if self.shape:
             repr+= f", shape={self.shape}"
@@ -1344,8 +1315,6 @@ class Data:
             grp.create_dataset("tag", data=self.Ndata)
         if self.Nbst_inner != Data.Nbst_inner:
             grp.create_dataset("Nbst_inner", data=self.Nbst_inner)
-        if self.cache_field_names != Data.cache_field_names:
-            grp.create_dataset("cache_field_names", data=self.cache_field_names)
     
     @staticmethod
     def deserialize(h5f: h5.Group, node:str|None = None) -> Self:
@@ -1367,8 +1336,6 @@ class Data:
             new.Ndata = grp["Ndata"][()]
         if "Nbst_inner" in grp:
             new.Nbst_inner = grp["Nbst_inner"][()]
-        if "cache_field_names" in grp:
-            new.cache_field_names = grp["cache_field_names"][()]
 
         return new
 

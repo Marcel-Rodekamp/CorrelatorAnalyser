@@ -6,8 +6,12 @@ def fit(
 ) -> FitResult:
 
     if backend == "iminuit":
-        from .fit_iminuit import fit_iminuit
-        return fit_iminuit( **kwargs )
+        if "linear_params" in kwargs:
+            from .fit_iminuit_variable_projection import fit_iminuit
+            return fit_iminuit( **kwargs )
+        else:
+            from .fit_iminuit import fit_iminuit
+            return fit_iminuit( **kwargs )
     
     elif backend == "lsqfit":
         from .fit_lsqfit import fit_lsqfit
