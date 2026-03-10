@@ -299,11 +299,11 @@ def fit_lsqfit(
 
         if Nrest > 0:
             res_slice = np.s_[ Nblock*blockSize: ]
-            inputs.append(
+            inputs.append((
                 args[res_slice], # list of dicts: fit_args 
                 np.arange(Nres)[res_slice].tolist(), # list of resample ids: nres
                 True, # flag to pickle the output: pickle
-            )
+            ))
 
         with mp.Pool(processes=Nproc) as pool:
             results = pool.starmap(execute_fit, inputs)
