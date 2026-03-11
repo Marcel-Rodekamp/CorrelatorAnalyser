@@ -460,6 +460,10 @@ class FitResult:
                     #         self.priors[key] = Data.empty(resample_type = self.resample_type, shape=None, Nresample=self.Nresample, dtype=object)
                     #     self.priors[key].rspl[nres] = Prior.import_from_lsqfit(nlf.prior)
 
+            if not hasattr(self, "fit_output_rspl"):
+                self.fit_output_rspl:list[object] = [None]*self.Nresample
+            self.fit_output_rspl[nres] = nlf
+
             # Extract fit statistics
             self.chi2.rspl[nres] = nlf.chi2
             self.p_value.rspl[nres] = nlf.Q
@@ -526,6 +530,9 @@ class FitResult:
                         # if key not in self.priors:
                         #     self.priors[key] = Data.empty(resample_type = self.resample_type, shape=None, Nresample=self.Nresample, dtype=object)
                         self.priors[key] = Prior.import_from_lsqfit(nlf.prior)[key]
+
+            # These will not be serialized!
+            self.fit_output = nlf
 
             # Extract fit statistics
             self.chi2.mean = nlf.chi2
@@ -684,6 +691,11 @@ class FitResult:
                     # extract the parameter
                     self.params[key].rspl[nres] = param
 
+            # These will not be serialized!
+            if not hasattr(self, "fit_output_rspl"):
+                self.fit_output_rspl:list[object] = [None]*self.Nresample
+            self.fit_output_rspl[nres] = minuit
+
             # Extract fit statistics
             self.chi2.rspl[nres] = minuit.fval
             self.p_value.rspl[nres] = gammaincc(self.dof/2, self.chi2.rspl[nres]/2)
@@ -737,6 +749,9 @@ class FitResult:
 
                     # extract the parameter
                     self.params[key].mean = param
+
+            # These will not be serialized!
+            self.fit_output = minuit
 
             # Extract fit statistics
             self.chi2.mean = minuit.fval
