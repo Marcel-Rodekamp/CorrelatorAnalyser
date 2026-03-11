@@ -1397,9 +1397,6 @@ class Data:
             raise ValueError( f"Setting requires value to be of type Data, np.ndarray, or Number but is: {type(value)}" )
 
     def reshape(self, shape, *args, **kwargs):
-        # often means etc may want to be in the same format hence we will simply recompute them
-        self.delete_cache()
-
         self._rspl = self._rspl.reshape( (self.Nresample,*shape), *args,**kwargs)
         self._mean = self._mean.reshape( (*shape,), *args,**kwargs )
 
