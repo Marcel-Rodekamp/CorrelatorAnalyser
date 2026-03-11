@@ -526,7 +526,7 @@ class Data:
             raise RuntimeError(f"blocking method must be 'block', 'skip' or None (null) but got {self.params['blocking method']}")
             
         else: # rwf is not None
-            data *= rwf[:, *(np.newaxis,)*len(shape)] 
+            data = data * rwf[:, *(np.newaxis,)*len(shape)] 
             
             blocked_rwf  = np.zeros((Nblock))
             for k in range(Nblock):
@@ -539,7 +539,7 @@ class Data:
 
             return blocked_data, blocked_rwf
 
-    @ staticmethod
+    @staticmethod
     def jackknife(data:np.ndarray, rwf:np.ndarray|None = None, blocksize: int|None = None) -> np.ndarray:
         r"""
             param:
@@ -551,7 +551,7 @@ class Data:
         if blocksize is not None:
             data, rwf = Data.blocking(data=data, blocksize=blocksize,rwf=rwf)
         elif rwf is not None:
-            data *= rwf[:,*( (np.newaxis,)*(data.ndim-1) )]
+            data = data * rwf[:,*( (np.newaxis,)*(data.ndim-1) )]
 
         if rwf is None:
             # The jackknife is defined for all k = 0,1,2...,Ndata-1
@@ -615,7 +615,7 @@ class Data:
         if blocksize is not None:
             data, rwf = Data.blocking(data=data, blocksize=blocksize,rwf=rwf)
         elif rwf is not None:
-            data *= rwf[:,*( (np.newaxis,)*(data.ndim-1) )]
+            data = data * rwf[:,*( (np.newaxis,)*(data.ndim-1) )]
 
         # get the number of 
         Ndata:int = data.shape[0]
@@ -1123,8 +1123,6 @@ class Data:
     def serr(self) -> np.ndarray|Number:
         if self.resample_type == 'jkn':
             self._serr = np.sqrt( (self.Nresample-1) ) * np.std( self._rspl, axis = 0 )
-            # or equivalently 
-            # self._serr = np.sqrt( ((self.Nresample-1)/(self.Nresample)) * np.sum( self.data, axis = 0) )
         elif self.resample_type == 'bst':
             self._serr = np.std( self._rspl, axis = 0, ddof=1 )
         else:
