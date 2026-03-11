@@ -1,762 +1,713 @@
-import numpy as np
+from __future__ import annotations
 
-import h5py
-
-from dataclasses import dataclass
-
-from dill import dumps, loads
-
+import inspect
+import textwrap
+import warnings
 from collections.abc import Callable
 from typing import Any
 
-# We provide an import from lsqfit thus require
-import lsqfit
-import gvar as gv 
-
-# We provide an import from minuit thus require
-
+import h5py
+import numpy as np
 from scipy.special import gammaincc
 
 from .data import Data
-
 from .prior import Prior
 
 
-@dataclass
+# =============================================================================
+# Model serialisation helpers
+# =============================================================================
+
+def _serialise_fcn(fcn: Callable) -> bytes:
+    """
+    Serialise a model function as its UTF-8 source code.
+
+    Using ``dill`` to pickle closures produces memory-layout-dependent
+    byte strings that break when a file is loaded on a different machine
+    or Python version.  Storing the raw source text is portable and
+    human-readable.  The function is reconstructed with ``exec`` on load
+    (see ``_deserialise_fcn``).
+
+    Raises ``ValueError`` if the source cannot be retrieved (e.g. for
+    lambda functions defined at the REPL).
+    """
+    try:
+        src = inspect.getsource(fcn)
+    except (OSError, TypeError) as exc:
+        raise ValueError(
+            f"Cannot serialise model function '{getattr(fcn, '__name__', fcn)}': "
+            "source code is not available.  Define the model in a .py file "
+            "so that inspect.getsource() can retrieve it."
+        ) from exc
+
+    # Dedent so that methods / nested functions round-trip correctly.
+    return textwrap.dedent(src).encode("utf-8")
+
+
+def _deserialise_fcn(src_bytes: bytes, name: str) -> Callable | None:
+    """
+    Reconstruct a callable from its source bytes.
+
+    Returns ``None`` and emits a warning on failure so that the rest of
+    the FitResult is still usable even without the model function.
+    """
+    src = src_bytes.decode("utf-8") if isinstance(src_bytes, (bytes, bytearray)) else src_bytes
+    ns: dict = {}
+    try:
+        exec(compile(src, "<fitResult>", "exec"), ns)   # noqa: S102
+    except Exception as exc:
+        warnings.warn(
+            f"Could not reconstruct model function from stored source "
+            f"(name='{name}'): {exc}.  FitResult.fcn will be None.",
+            RuntimeWarning,
+            stacklevel=2,
+        )
+        return None
+
+    # The function we want is the last callable defined in the source.
+    candidates = [v for v in ns.values() if callable(v) and not isinstance(v, type)]
+    if not candidates:
+        warnings.warn(
+            "No callable found in stored model source.  FitResult.fcn will be None.",
+            RuntimeWarning,
+            stacklevel=2,
+        )
+        return None
+    return candidates[-1]
+
+
+# =============================================================================
+# Internal helpers
+# =============================================================================
+
+def _make_param_data(resample_type: str | None, Nresample: int | None) -> Data:
+    """Return an empty, locked-mean Data object for a scalar fit parameter."""
+    return Data.empty(
+        resample_type=resample_type,
+        shape=None,
+        Nresample=Nresample,
+        locked_mean=True,
+    )
+
+
+def _strip_log_key(key: str) -> tuple[str, bool]:
+    """
+    Detect lsqfit's ``log(param)`` key convention.
+
+    Returns ``(plain_key, is_log)``.
+    """
+    if key.startswith("log(") and key.endswith(")"):
+        return key[4:-1], True
+    return key, False
+
+
+def _deserialise_scalar_or_data(grp: h5py.Group, name: str) -> float | Data | None:
+    """Read a field that was stored as either a plain dataset or a Data group."""
+    if name not in grp:
+        return None
+    node = grp[name]
+    if isinstance(node, h5py.Dataset):
+        return float(node[()])
+    return Data.deserialize(grp, node=name)
+
+
+# =============================================================================
+# FitResult
+# =============================================================================
+
 class FitResult:
-    # ###########################################
-    # Fit Model
-    # ###########################################
+    """
+    Container for the result of a single fit.
 
-    # the independent variables of the fit 
-    abscissa: np.ndarray | Data | None = None
+    Populated by one of the ``import_from_*`` methods after a fit backend
+    has run.  All per-resample quantities are stored in ``Data`` objects
+    with ``locked_mean=True`` so that the central-value estimate is never
+    silently overwritten by a resample mean.
 
-    # abscissa used in the fit
-    abscissa: np.ndarray | None = None
+    Parameters
+    ----------
+    abscissa : np.ndarray | Data | None
+        Independent variable(s) used in the fit.
+    Nresample : int | None
+        Number of resamples.  ``None`` means no resample fits were done.
+    resample_type : str | None
+        ``'bst'`` (bootstrap) or ``'jkn'`` (jackknife).
+    AIC_small_sample_correction : bool
+        Apply the finite-sample AIC correction (AICc).  Default ``True``.
+    """
 
-    # number of degrees of freedom
-    dof: int | None = None
+    # ------------------------------------------------------------------
+    # Construction
+    # ------------------------------------------------------------------
 
-    # Functional form of the fit model
-    fcn: Callable | None = None
+    def __init__(
+        self,
+        abscissa: np.ndarray | Data | None = None,
+        Nresample: int | None = None,
+        resample_type: str | None = None,
+        AIC_small_sample_correction: bool = True,
+    ) -> None:
 
-    # specify if resamples are fitted 
-    resample_type: str | None = None
-    
-    # number of resamples if provided
-    Nresample: int | None = None
+        if resample_type not in (None, "bst", "jkn"):
+            raise ValueError(
+                f"resample_type must be None, 'bst', or 'jkn'; got '{resample_type}'."
+            )
+        if resample_type is not None and Nresample is None:
+            raise ValueError(
+                f"Nresample must be set when resample_type='{resample_type}'."
+            )
 
-    # ###########################################
-    # Central Value Fit Result
-    # ###########################################
+        self.abscissa: np.ndarray | Data | None = abscissa
+        self.Nresample: int | None              = Nresample
+        self.resample_type: str | None          = resample_type
+        self.AIC_small_sample_correction: bool  = AIC_small_sample_correction
 
-    # result parameters of the central value fit 
-    params: dict[str, Data] | None = None
+        # Set by import_from_* methods
+        self.fcn: Callable | None           = None
+        self.dof: int | None                = None
+        self.params: dict[str, Data]        = {}
+        self.priors: dict[str, Prior]       = {}
 
-    # prios of the central value fit
-    # only filled if actually used
-    priors: dict[str,Prior] | None = None
+        # Hessian-based (propagated) parameter errors, keyed like self.params.
+        # Populated by import_from_iminuit / import_from_lsqfit when
+        # Hessian information is available.  mean holds the central-value
+        # propagated error; rspl[nres] holds the propagated error of resample nres.
+        self.params_hessian_err: dict[str, Data] = {}
 
-    # resulting χ² of the central value fit
-    chi2: float | Data | None = None
+        # Fit-quality scalars / Data objects (scalar for CV-only, Data when
+        # resample fits were also run).
+        self.chi2:    Data | float | None = None
+        self.p_value: Data | float | None = None
+        self.AIC:     Data | float | None = None
 
-    # resulting p-value of the central value fit
-    p_value: float | Data | None = None
+        # Initialise Data containers when resample fits are requested.
+        if self.has_resamples:
+            self.chi2    = Data.empty(resample_type=resample_type, shape=None, Nresample=Nresample, locked_mean=True)
+            self.p_value = Data.empty(resample_type=resample_type, shape=None, Nresample=Nresample, locked_mean=True)
+            self.AIC     = Data.empty(resample_type=resample_type, shape=None, Nresample=Nresample, locked_mean=True)
 
-    # resulting Akaike information criterion of the central value fit
-    AIC: float | Data | None = None
+        # Raw backend objects (not serialised).
+        self.fit_output: Any = None                          # central value
+        self.fit_output_rspl: list[Any] | None = None        # per-resample
 
-    # determine if a small sample correction is being calculated in the AIC
-    AIC_small_sample_correction: bool = True
-    
-    # ###########################################
-    # Functionality
-    # ###########################################
-
-    @property
-    def Ndata(self) -> int:
-        if self.abscissa is None:
-            raise RuntimeError("Can't deduce number of fit points (Ndata) if no abscissa is provided")
-        
-        return np.prod(self.abscissa.shape)
+    # ------------------------------------------------------------------
+    # Properties
+    # ------------------------------------------------------------------
 
     @property
     def has_resamples(self) -> bool:
-        r"""
-            Check if the fits are done on resamples.
-        """
-        # if the number of bootstraps are set we assume that bootstrap fits are be performed
+        """True if resample fits were (or will be) performed."""
         return self.resample_type is not None
 
-    def eval(self, abscissa: np.ndarray | Data | None = None) -> Data | np.ndarray:
-        r"""
-            @param abscissa: np.ndarray, a abscissa to evaluate the fit model. If None fit abscissa is used 
+    @property
+    def Ndata(self) -> int:
+        """Number of fit data points, inferred from the abscissa shape."""
+        if self.abscissa is None:
+            raise RuntimeError(
+                "Cannot determine Ndata: abscissa has not been set."
+            )
+        return int(np.prod(self.abscissa.shape))
+
+    # ------------------------------------------------------------------
+    # Evaluation
+    # ------------------------------------------------------------------
+
+    def eval(self, abscissa: np.ndarray | Data | None = None) -> Data:
         """
+        Evaluate the fitted model on *abscissa*.
+
+        Parameters
+        ----------
+        abscissa : np.ndarray | Data | None
+            Where to evaluate the model.  Defaults to the fit abscissa.
+
+        Returns
+        -------
+        Data
+            Model prediction with the same resample structure as the fit.
+        """
+        if self.fcn is None:
+            raise RuntimeError("No model function (fcn) stored in this FitResult.")
         if abscissa is None:
-            # if abscissa not provided we use a linear space with 5 interval length of the original fit interval
             abscissa = self.abscissa
 
-        mean = self.fcn( abscissa, {key: self.params[key].mean for key in self.params.keys()} ).astype(float)
+        cv_params = {k: v.mean for k, v in self.params.items()}
+        mean = self.fcn(abscissa, cv_params).astype(float)
 
-        out = Data.zeros(
+        out = Data.empty(
             resample_type=self.resample_type,
-            shape = mean.shape,
-            Nresample = self.Nresample,
-            # locked_mean allows to fix the value of the mean using the setter function params[key].mean
-            # such that the getter function params[key].mean does not recompute the mean from the 
-            # resamples (as per default)
-            locked_mean = True,
+            shape=mean.shape,
+            Nresample=self.Nresample,
+            locked_mean=True,
         )
-
         out.mean = mean
-        for nres in range(self.Nresample):
-            out.rspl[nres] = self.fcn( abscissa, {key: self.params[key].rspl[nres] for key in self.params.keys()} )
+
+        if self.has_resamples:
+            for nres in range(self.Nresample):
+                rs_params = {k: v.rspl[nres] for k, v in self.params.items()}
+                out.rspl[nres] = self.fcn(abscissa, rs_params)
 
         return out
 
-    def __post_init__(self) -> None:
-        r"""
-            Thus function, set's up the various arrays for bootstrap fits
+    # ------------------------------------------------------------------
+    # AIC
+    # ------------------------------------------------------------------
+
+    def _compute_AIC(self, chi2: float) -> float:
         """
+        Akaike information criterion.
 
-        # check resample type
+        Formula from https://arxiv.org/abs/2305.19417 (eq. 3):
 
-        # allow "None" string 
-        if self.resample_type == "None":
-            raise NotImplementedError(f"Currently, gaussian error propagation is not implemented use, resample_type = 'bst' or 'jkn'")
-            self.resample_type = None
+            AIC  = chi2 + 2k - 2d_K
+            AICc = AIC  + (2k² + 2k) / (d_K - k - 1)
 
-        
-        # check that resample type is as expected
-        if self.resample_type not in [None, "bst", "jkn"]:
-            raise RuntimeError(f"Resample type {self.resample_type} not recognized. Expecting None (no resample), 'bst' (bootstrap) or 'jkn' (jackknife) ")
-        
-        # if no resamples have to be done, we won't need to set up their respective arrays
-        if self.resample_type is None:
-            return
-        else:
-            if self.Nresample is None:
-                raise RuntimeError(f"Nresample not provided even though resample_type={self.resample_type}")
+        where k = Nparam and d_K = Ndata.
+        """
+        if not self.params:
+            raise RuntimeError(
+                "Cannot compute AIC: no fit parameters have been stored yet."
+            )
+        k  = len(self.params)
+        dK = self.Ndata
 
-        self.chi2       = Data.empty(resample_type = self.resample_type, shape=None, Nresample=self.Nresample, locked_mean=True)
-        self.p_value    = Data.empty(resample_type = self.resample_type, shape=None, Nresample=self.Nresample, locked_mean=True)
-        self.AIC        = Data.empty(resample_type = self.resample_type, shape=None, Nresample=self.Nresample, locked_mean=True)
-        self.priors     = {}
+        aic = chi2 + 2.0 * (k - dK)
 
-        # this is only added for testing purpose, will not be serialized!
-        # not all fitters set this!
-        self.number_function_calls = None
+        if self.AIC_small_sample_correction:
+            denominator = dK - k - 1
+            if denominator == 0:
+                raise RuntimeError(
+                    f"AICc correction requires Ndata > Nparam + 1, "
+                    f"but Ndata={dK}, Nparam={k}."
+                )
+            aic += (2.0 * k**2 + 2.0 * k) / denominator
+
+        return aic
+
+    # ------------------------------------------------------------------
+    # Representation
+    # ------------------------------------------------------------------
 
     def __repr__(self) -> str:
-        r"""
-            Create a representation of the fit results
-            
-            The presented fit parameters 
-                - deduced from central value fit and resamples
-            The fit statistics are deduced from central value fits
-            TODO: Add the some fit results for bootstraps
-        """
-
-        # General information on the fit model
-        rep = f"FitResult[ ({self.abscissa[0]},{self.abscissa[-1]}), Ndata={self.Ndata}, resample:{ self.resample_type if self.has_resamples else False }]:\n"
-
-        # Fit statistics (of central value fit)
-        rep+= f"  𝜒²/dof [dof] = {self.chi2.mean/self.dof:.3g} [{self.dof}]\n"
-        rep+= f"  p-value = {self.p_value.mean:.3g} \n"
-        rep+= f"  AIC = {self.AIC.mean:.3g} \n"
-        
-        # Fit parameters
+        abscissa_range = (
+            f"({self.abscissa[0]}, {self.abscissa[-1]})"
+            if self.abscissa is not None
+            else "?"
+        )
+        resample_tag = self.resample_type if self.has_resamples else False
+        lines = [
+            f"FitResult[{abscissa_range}, Ndata={self.Ndata}, resample:{resample_tag}]:",
+            f"  χ²/dof [dof] = {self.chi2.mean / self.dof:.3g} [{self.dof}]",
+            f"  p-value      = {self.p_value.mean:.3g}",
+            f"  AIC          = {self.AIC.mean:.3g}",
+        ]
         for key, p in self.params.items():
-            if key in self.priors:
-                rep+= f"    - {key}: {p.gvar()}  [{self.priors[key]}]\n"
-            else:
-                rep+= f"    - {key}: {p.gvar()} \n"
+            prior_tag = f"  [{self.priors[key]}]" if key in self.priors else ""
+            hess_tag  = (
+                f"  (Hessian σ = {self.params_hessian_err[key].mean:.3g})"
+                if key in self.params_hessian_err else ""
+            )
+            lines.append(f"    {key}: {p.gvar()}{prior_tag}{hess_tag}")
+        return "\n".join(lines)
 
-        return rep
+    # ------------------------------------------------------------------
+    # HDF5 serialisation
+    # ------------------------------------------------------------------
 
     def serialize(self, h5_handle: h5py.File, node: str | None = None) -> None:
-        r"""
-            @param h5_handle: h5py.File, file object pointing to an opened h5-file 
-            @param node: str, path into the h5 file relative to the h5_handle
-
-            Store the FitResult into a node of a h5 file. 
         """
+        Write this FitResult into an HDF5 group.
 
-        if node is None:
-            grp = h5_handle
-        else:
-            grp = h5_handle.create_group(node)
-
-        # Check that the fit result is actually computed
-        if self.params is None:
+        Parameters
+        ----------
+        h5_handle : h5py.File
+            Open HDF5 file handle.
+        node : str | None
+            Path of the group to create.  If ``None``, writes into *h5_handle*
+            directly.
+        """
+        if not self.params:
             raise ValueError(
-                f"Import data from a fit first before saving the data in an h5 file."
+                "No fit results to serialise.  Run a fit first."
             )
 
-        # abscissa: np.ndarray | Data 
-        if isinstance(self.abscissa,Data):
-            self.abscissa.serialize(grp,node="abscissa")
-        else:
-            grp.create_dataset("abscissa", data = self.abscissa)
+        grp = h5_handle if node is None else h5_handle.create_group(node)
 
-        # Ndata: int == len(abscissa)
-        grp.create_dataset("Ndata", data = self.Ndata)
+        # --- abscissa ---
+        if isinstance(self.abscissa, Data):
+            self.abscissa.serialize(grp, node="abscissa")
+        elif self.abscissa is not None:
+            grp.create_dataset("abscissa", data=self.abscissa)
 
-        # dof: int | None = None 
+        # --- scalar metadata ---
         if self.dof is not None:
-            grp.create_dataset("dof", data = self.dof)
-
-        # fcn: Callable | None = None
-        if self.fcn is not None:
-            grp.create_dataset("fcn", data = dumps(self.fcn,0))
-
-        # resample_type: str | None = None
-        if self.resample_type is not None:
-            grp.create_dataset("resample_type", data = self.resample_type)
-
-        # Nresample: int | None = None
+            grp.create_dataset("dof", data=self.dof)
         if self.Nresample is not None:
-            grp.create_dataset("Nresample", data = self.Nresample)
+            grp.create_dataset("Nresample", data=self.Nresample)
+        if self.resample_type is not None:
+            grp.create_dataset("resample_type", data=self.resample_type)
 
-        # params: dict[str, Data] | None = None
+        # --- model function (source code, not pickle) ---
+        if self.fcn is not None:
+            try:
+                src_bytes = _serialise_fcn(self.fcn)
+                grp.create_dataset("fcn_source", data=np.void(src_bytes))
+                grp.create_dataset("fcn_name",   data=getattr(self.fcn, "__name__", "unknown"))
+            except ValueError as exc:
+                warnings.warn(str(exc), RuntimeWarning, stacklevel=2)
+
+        # --- fit parameters ---
         for key, param in self.params.items():
             param.serialize(grp, node=f"params/{key}")
 
-        #prior: dict[str,Prior] | None = None
-        if self.priors is not None:
-            for key, prior in self.priors.items():
-                prior.serialize(grp, node=f"priors/{key}")
+        # --- Hessian parameter errors ---
+        for key, herr in self.params_hessian_err.items():
+            herr.serialize(grp, node=f"params_hessian_err/{key}")
 
-        #chi2: float | Data | None = None
-        if isinstance(self.chi2,Data):
-            self.chi2.serialize(grp,node="chi2")
-        elif self.chi2 is not None:
-            grp.create_dataset("chi2", data = self.chi2)
+        # --- priors ---
+        for key, prior in self.priors.items():
+            prior.serialize(grp, node=f"priors/{key}")
 
-        #p_value: float | Data | None = None
-        if isinstance(self.p_value,Data):
-            self.p_value.serialize(grp,node="p_value")
-        elif self.p_value is not None:
-            grp.create_dataset("p_value", data = self.p_value)
-
-        #AIC: float | Data | None = None
-        if isinstance(self.AIC,Data):
-            self.AIC.serialize(grp,node="AIC")
-        elif self.AIC is not None:
-            grp.create_dataset("AIC", data = self.AIC)
-
-        return
+        # --- fit quality ---
+        for name, val in (("chi2", self.chi2), ("p_value", self.p_value), ("AIC", self.AIC)):
+            if isinstance(val, Data):
+                val.serialize(grp, node=name)
+            elif val is not None:
+                grp.create_dataset(name, data=val)
 
     @staticmethod
-    def deserialize(h5_handle: h5py.File, node: str | None = None) -> "FitResult":
-        r"""
-            @param h5_handle: h5py.File, file object pointing to an opened h5-file 
-            @param node: str, path into the h5 file relative to the h5_handle
-
-            Deserialize a FitResult from an h5 file. This is the inverse operation to serialize
+    def deserialize(h5_handle: h5py.File, node: str | None = None) -> FitResult:
         """
-        if node is None:
-            grp = h5_handle
-        else:
-            grp = h5_handle[node]
+        Reconstruct a FitResult from an HDF5 group.
 
-        abscissa = grp[f"abscissa"][()]
+        Parameters
+        ----------
+        h5_handle : h5py.File
+            Open HDF5 file handle.
+        node : str | None
+            Path of the group to read from.
 
-        # check if h5file contains bootstrap data:
-        if "Nresample" in grp:
-            Nresample:int = grp[f"Nresample"][()]
-            resample_type:str = grp[f"resample_type"][()].decode('utf-8')
-            out = FitResult(abscissa=abscissa, resample_type=resample_type, Nresample=Nresample)
-        else:
-            out = FitResult(abscissa=abscissa)
+        Returns
+        -------
+        FitResult
+        """
+        grp = h5_handle if node is None else h5_handle[node]
 
-        # abscissa: np.ndarray | Data 
+        # Determine resample configuration first so the constructor can
+        # allocate the right Data containers.
+        Nresample     = int(grp["Nresample"][()]) if "Nresample" in grp else None
+        resample_type = (
+            grp["resample_type"][()].decode("utf-8")
+            if "resample_type" in grp else None
+        )
+
+        out = FitResult(Nresample=Nresample, resample_type=resample_type)
+
+        # abscissa
         if "abscissa" in grp:
             if isinstance(grp["abscissa"], h5py.Dataset):
-                setattr(out, "abscissa", grp["abscissa"][()])
+                out.abscissa = grp["abscissa"][()]
             else:
-                setattr(out, "abscissa", Data.deserialize(grp,node="abscissa"))
+                out.abscissa = Data.deserialize(grp, node="abscissa")
 
-        # dof: int | None = None 
+        # scalar metadata
         if "dof" in grp:
-            setattr(out, "dof", grp["dof"][()])
+            out.dof = int(grp["dof"][()])
 
-        # fcn: Callable | None = None
-        if "fcn" in grp:
-            setattr(out, "fcn", loads(grp["fcn"][()]))
+        # model function
+        if "fcn_source" in grp:
+            src_bytes = bytes(grp["fcn_source"][()])
+            name      = (
+                grp["fcn_name"][()].decode("utf-8")
+                if "fcn_name" in grp else "unknown"
+            )
+            out.fcn = _deserialise_fcn(src_bytes, name)
 
-        # Nresample: int | None = None
-        if "Nresample" in grp:
-            setattr(out, "Nresample", grp["Nresample"][()])
-
-        # params: dict[str, Data] | None = None
+        # fit parameters
         if "params" in grp:
-            params = {}
-            for key in grp["params"].keys():
-                params[key] = Data.deserialize(grp, node=f"params/{key}")
-            setattr(out, "params", params)
+            out.params = {
+                key: Data.deserialize(grp, node=f"params/{key}")
+                for key in grp["params"].keys()
+            }
 
-        #prior: dict[str,Prior] | None = None
+        # Hessian parameter errors
+        if "params_hessian_err" in grp:
+            out.params_hessian_err = {
+                key: Data.deserialize(grp, node=f"params_hessian_err/{key}")
+                for key in grp["params_hessian_err"].keys()
+            }
+
+        # priors
         if "priors" in grp:
-            priors = {}
-            for key in grp["priors"].keys():
-                priors[key] = Prior.deserialize(grp, node = f"priors/{key}")
-            setattr(out, "priors", priors)
+            out.priors = {
+                key: Prior.deserialize(grp, node=f"priors/{key}")
+                for key in grp["priors"].keys()
+            }
 
-        #chi2: float | Data | None = None
-        if "chi2" in grp:
-            if isinstance(grp["chi2"], h5py.Dataset):
-                setattr(out, "chi2", grp["chi2"][()])
-            else:
-                setattr(out, "chi2", Data.deserialize(grp,node="chi2"))           
-
-        #p_value: float | Data | None = None
-        if "p_value" in grp:
-            if isinstance(grp["p_value"], h5py.Dataset):
-                setattr(out, "p_value", grp["p_value"][()])
-            else:
-                setattr(out, "p_value", Data.deserialize(grp,node="p_value"))  
-
-        #AIC: float | Data | None = None
-        if "AIC" in grp:
-            if isinstance(grp["AIC"], h5py.Dataset):
-                setattr(out, "AIC", grp["AIC"][()])
-            else:
-                setattr(out, "AIC", Data.deserialize(grp,node="AIC"))           
+        # fit quality
+        for name in ("chi2", "p_value", "AIC"):
+            val = _deserialise_scalar_or_data(grp, name)
+            if val is not None:
+                setattr(out, name, val)
 
         return out
 
-    def calculate_AIC(self, chi2):
-        r"""
-            @param small_sample_correction: bool, flag to add/remove a small sample correction (default: False)
+    # ------------------------------------------------------------------
+    # Private helpers shared by all importers
+    # ------------------------------------------------------------------
 
-            Compute the Akaike information criterion for a fit result
-            based on the chi^2 obtained from lsqfit.
-            The form can be found in
-                https://arxiv.org/abs/2305.19417
-                https://arxiv.org/abs/2208.14983
-                https://arxiv.org/abs/2008.01069
-            equation 3 in the first:
-                AIC = -2ln L^* + 2k - 2d_K 
+    def _ensure_param(self, key: str) -> None:
+        """Create the Data entry for *key* if it does not yet exist."""
+        if key not in self.params:
+            self.params[key] = _make_param_data(self.resample_type, self.Nresample)
 
-            A small sample correction can be applied to both by seeting small_sample_correction 
-            https://en.wikipedia.org/wiki/Akaike_information_criterion#Modification_for_small_sample_size
-                AICc = AIC + (2k^2 + 2k)/(d_K - k -1)
+    def _ensure_hessian_err(self, key: str) -> None:
+        """Create the Hessian-error Data entry for *key* if it does not yet exist."""
+        if key not in self.params_hessian_err:
+            self.params_hessian_err[key] = _make_param_data(self.resample_type, self.Nresample)
 
-            Here we compare
-                1. -2*ln(L^*) = chi^2
-                2. k = number of parameters
-                3. d_K = number of points
-                5. Model parameter \Theta
-                4. p_\Theta prior for parameter \Theta
-        """
-        if bool(self.params):
-            Nparam: int = len(self.params.keys())
+    def _store_fit_quality(
+        self, chi2: float, nres: int | None
+    ) -> None:
+        """Write chi2, p-value, and AIC for a central-value or resample fit."""
+        p_val = float(gammaincc(self.dof / 2.0, chi2 / 2.0))
+        aic   = self._compute_AIC(chi2)
+
+        if nres is None:
+            self.chi2.mean    = chi2
+            self.p_value.mean = p_val
+            self.AIC.mean     = aic
         else:
-            raise RuntimeError("FitResult not initialized, can not determine number of parameters for calculating AIC")
+            self.chi2.rspl[nres]    = chi2
+            self.p_value.rspl[nres] = p_val
+            self.AIC.rspl[nres]     = aic
 
-        # start with the degree of freedom. 
-        # TODO: This factor 2 is highly debated as it is very aggressive for many data sets
-        #       We may want to come up with a way to allow a more flexible way of calculating
-        #       the AIC.
-        #       For reference see issue #8
-        AIC: float = 2 * (Nparam-self.Ndata)
+    def _init_resample_store(self) -> None:
+        """Lazily create the per-resample raw-output list."""
+        if self.fit_output_rspl is None:
+            self.fit_output_rspl = [None] * self.Nresample
 
-        if self.AIC_small_sample_correction and (self.Ndata - Nparam - 1) != 0:
-
-            # An error is raised if the number of data points is too small
-            if self.Ndata <= Nparam +1:
-                raise RuntimeError(f"In order to use the AIC small sample correction the number of data points and parameters should be such that Ndata>Nparam+1, but instead they have the values Ndata={self.Ndata}, Nparam={Nparam}.")
-
-            # This corrections is negligible if Ndata >> Nparam**2 and thus often very useful
-            # it effectively favours models with less parameters
-            AIC += (2*Nparam**2 + 2*Nparam)/(self.Ndata - Nparam - 1)
-
-        AIC += chi2
-
-        return AIC
-
-    # ###########################################
+    # ------------------------------------------------------------------
     # Importers
-    # ###########################################
-    def import_from_lsqfit(self, nlf: lsqfit.nonlinear_fit, nres: None | int = None) -> None:
+    # ------------------------------------------------------------------
+
+    def import_from_iminuit(
+        self,
+        minuit: Any,
+        Ndata: int,
+        model: Callable,
+        variable_projection: dict[str, float] | None = None,
+        prior: dict[str, Prior] | None = None,
+        nres: int | None = None,
+    ) -> None:
         """
-            @param nlf: lsqfit.nonlinear_fit, lsqfit fit result. 
-            @param nres: int, resample ID imports the fit result into the resample arrays at position nres. If none, the central value fit fields
-                              are populated
-            save the results from a lsqfit, if nres is given then save in corresponding row nres of the bootstrap parameters
+        Import parameters and fit quality from a ``iminuit.Minuit`` object.
+
+        Parameters
+        ----------
+        minuit : iminuit.Minuit
+            Completed Minuit instance (after ``migrad()``).
+        Ndata : int
+            Number of fit data points used for χ² and AIC.
+        model : callable
+            The model function (stored on the first call).
+        variable_projection : dict[str, float] | None
+            Linear-parameter values from variable-projection fits.
+        prior : dict[str, Prior] | None
+            Priors used in the fit (central-value fit only).
+        nres : int | None
+            Resample index.  ``None`` → central-value fit.
         """
-        # if the functional form hasn't been set we populate it here
+        if self.fcn is None:
+            self.fcn = model
+
+        if self.dof is None:
+            Nnonlin = len(minuit.params)
+            Nlin    = len(variable_projection) if variable_projection is not None else 0
+            Nprior  = len(prior) if prior is not None else 0
+            self.dof = Ndata - Nnonlin - Nlin + Nprior
+
+        # --- parameter values ---
+        for param in minuit.params:
+            key = param.name
+            self._ensure_param(key)
+            if nres is None:
+                self.params[key].mean = param.value
+            else:
+                self.params[key].rspl[nres] = param.value
+
+        # --- Hessian (propagated) errors from Minuit ---
+        # minuit.valid is True only after a successful migrad; errors are
+        # meaningful only after hesse() has been called (or migrad has
+        # estimated them).  We store them unconditionally and let the user
+        # decide whether to trust them.
+        for param in minuit.params:
+            key = param.name
+            if param.error is not None:
+                self._ensure_hessian_err(key)
+                if nres is None:
+                    self.params_hessian_err[key].mean = param.error
+                else:
+                    self.params_hessian_err[key].rspl[nres] = param.error
+
+        # --- variable-projection linear parameters ---
+        if variable_projection is not None:
+            for key, value in variable_projection.items():
+                self._ensure_param(key)
+                if nres is None:
+                    self.params[key].mean = value
+                else:
+                    self.params[key].rspl[nres] = value
+
+        # --- priors (central-value fit only) ---
+        if nres is None and prior is not None:
+            for key, p in prior.items():
+                self.priors[key] = p
+
+        # --- fit quality ---
+        self._store_fit_quality(minuit.fval, nres)
+
+        # --- raw backend object (not serialised) ---
+        if nres is None:
+            self.fit_output             = minuit
+            self.number_function_calls  = minuit.nfcn   # for testing
+        else:
+            self._init_resample_store()
+            self.fit_output_rspl[nres] = minuit
+
+    def import_from_lsqfit(
+        self,
+        nlf: Any,
+        nres: int | None = None,
+    ) -> None:
+        """
+        Import parameters and fit quality from a ``lsqfit.nonlinear_fit`` object.
+
+        lsqfit uses ``gvar.GVar`` objects for its parameters; we extract the
+        mean value here.  Log-normal priors are encoded by lsqfit as
+        ``"log(key)"`` entries — these are unwrapped and the physical (linear)
+        value is stored under the plain ``key``.
+
+        The ``gvar`` standard deviation from the lsqfit output is stored in
+        ``params_hessian_err`` as the propagated Gaussian error estimate.
+
+        Parameters
+        ----------
+        nlf : lsqfit.nonlinear_fit
+            Completed lsqfit fit object.
+        nres : int | None
+            Resample index.  ``None`` → central-value fit.
+        """
+        import gvar as gv
+
         if self.fcn is None:
             self.fcn = nlf.fcn
 
-        # if the degree of freedom hasn't been set we populate it here
-        # Notice, for lsqfit if priors are used for each parameter then
-        # dof = Ndata
-        # if start values are used for each parameter then
-        # dof = Ndata - Nparam
         if self.dof is None:
-            # lsqfit defines the dof as 
-            # Ndata - Nparam + Nprior
             self.dof = nlf.dof
 
-        # if nres is provided populate the resample fields at position nres
-        if nres is not None:
-            # check that the dictionary is set and fillable
-            if not bool(self.params):
-                self.params = {}
+        for raw_key, gvar_val in nlf.p.items():
+            key, is_log = _strip_log_key(raw_key)
+            mean  = float(np.exp(gv.mean(gvar_val)) if is_log else gv.mean(gvar_val))
+            # For log-normal params the propagated error in linear space is
+            # mean * sdev_of_log, but we store the gvar sdev directly so the
+            # user can interpret it in the natural parameterisation.
+            hess_err = float(gv.sdev(gvar_val))
 
-            # loop over all fit parameter keys
-            for key in nlf.p.keys():  
-                # lsqfit parameter keys can come in the form
-                # "param"
-                # "log(param)"
-                # if the latter is provided we want to remove the log part and explicitly exponentiate the result
-                # to get "param":...
-                if "log" in key:
-                    # delete 'log(' and ')' from 'log(X)' from to obtain X
-                    # X may be a string of arbitrary length
-                    key_red = key[4:-1]  
+            self._ensure_param(key)
+            self._ensure_hessian_err(key)
 
-                    # check if the resample array exists. If not set it
-                    # dtype = object allows to store gvar.gvar instances 
-                    if key_red not in self.params.keys():
-                        self.params[key_red] = Data.empty( 
-                            resample_type=self.resample_type, 
-                            shape = None, #each parameter is a one-dimensional object hence no additional shape
-                            Nresample=self.Nresample,
-                            # locked_mean allows to fix the value of the mean using the setter function params[key].mean
-                            # such that the getter function params[key].mean does not recompute the mean from the 
-                            # resamples (as per default)
-                            locked_mean = True 
-                        )
+            if nres is None:
+                self.params[key].mean              = mean
+                self.params_hessian_err[key].mean  = hess_err
+            else:
+                self.params[key].rspl[nres]             = mean
+                self.params_hessian_err[key].rspl[nres] = hess_err
 
-                    # extract the parameter and exponentiate it
-                    self.params[key_red].rspl[nres] = np.exp(gv.mean(nlf.p[key]))
-                    # we only save central vlaue priors for now
-                    # if nlf.prior is not None:
-                    #     if key_red not in self.priors:
-                    #         self.priors[key_red] = Data.empty(resample_type = self.resample_type, shape=None, Nresample=self.Nresample, dtype=object)
-                    #     self.priors[key_red].rspl[nres] = Prior.import_from_lsqfit(nlf.prior)
-                else:
+        # --- priors (central-value fit only) ---
+        if nres is None and nlf.prior is not None:
+            imported = Prior.import_from_lsqfit(nlf.prior)
+            for key, prior in imported.items():
+                self.priors[key] = prior
 
-                    # check if the resample array exists. If not set it
-                    if key not in self.params.keys():
-                        self.params[key] = Data.empty( 
-                            resample_type=self.resample_type, 
-                            shape = None, #each parameter is a one-d object hence no additional shape
-                            Nresample=self.Nresample,
-                            # locked_mean allows to fix the value of the mean using the setter function params[key].mean
-                            # such that the getter function params[key].mean does not recompute the mean from the 
-                            # resamples (as per default)
-                            locked_mean = True 
-                        )
+        # --- fit quality ---
+        # lsqfit stores p-value in nlf.Q; we re-compute from chi2 for
+        # consistency with the other backends.
+        self._store_fit_quality(float(nlf.chi2), nres)
 
-                    # extract the parameter
-                    self.params[key].rspl[nres] = gv.mean(nlf.p[key])
-
-                    # if nlf.prior is not None:
-                    #     if key not in self.priors:
-                    #         self.priors[key] = Data.empty(resample_type = self.resample_type, shape=None, Nresample=self.Nresample, dtype=object)
-                    #     self.priors[key].rspl[nres] = Prior.import_from_lsqfit(nlf.prior)
-
-            if not hasattr(self, "fit_output_rspl"):
-                self.fit_output_rspl:list[object] = [None]*self.Nresample
+        # --- raw backend object (not serialised) ---
+        if nres is None:
+            self.fit_output = nlf
+            self.number_function_calls  = nlf.nit   # for testing
+        else:
+            self._init_resample_store()
             self.fit_output_rspl[nres] = nlf
 
-            # Extract fit statistics
-            self.chi2.rspl[nres] = nlf.chi2
-            self.p_value.rspl[nres] = nlf.Q
-            self.AIC.rspl[nres] = self.calculate_AIC(self.chi2.rspl[nres])
+    def import_from_linear_regression(
+        self,
+        target_data: np.ndarray,
+        result_params: np.ndarray,
+        design_matrix: np.ndarray,
+        weight_matrix: np.ndarray,
+        parameter_names: tuple[str, ...],
+        nres: int | None = None,
+    ) -> None:
+        """
+        Import parameters and fit quality from the closed-form linear solver.
 
-        # central value fit (if nres is None)
-        else:
-            if not bool(self.params):
-                self.params = {}
+        Gaussian error propagation for linear regression is available in
+        closed form via the covariance C = (X^T W X)^{-1}.  The square
+        root of the diagonal of C is stored in ``params_hessian_err``.
 
-            # loop over all fit parameter keys
-            for key in list(nlf.p.keys()):  # don't want to store the log value
-                # lsqfit parameter keys can come in the form
-                # "param"
-                # "log(param)"
-                # if the latter is provided we want to remove the log part and explicitly exponentiate the result
-                # to get "param":...
-                if "log" in key:
-                    # delete 'log(' and ')' from 'log(X)' from to obtain X
-                    # X may be a string of arbitrary length
-                    key_red = key[4:-1]  
-
-                    if key_red not in self.params.keys():
-                        self.params[key_red] = Data.empty( 
-                            resample_type=self.resample_type, 
-                            shape = None, #each parameter is a one-dimensional object hence no additional shape
-                            Nresample=self.Nresample,
-                            # locked_mean allows to fix the value of the mean using the setter function params[key].mean
-                            # such that the getter function params[key].mean does not recompute the mean from the 
-                            # resamples (as per default)
-                            locked_mean = True 
-                        )
-
-                    # extract the parameter and exponentiate it
-                    self.params[key_red].mean = np.exp(gv.mean(nlf.p[key]))
-
-                    if nlf.prior is not None:
-                        # if key_red not in self.priors:
-                        #     self.priors[key_red] = Data.empty(resample_type = self.resample_type, shape=None, Nresample=self.Nresample, dtype=object)
-                        try:
-                            self.priors[key_red] = Prior.import_from_lsqfit(nlf.prior)[key_red]
-                        except KeyError as e:
-                            print( Prior.import_from_lsqfit(nlf.prior) )
-                            print(nlf.prior)
-                            raise e
-
-
-                else:
-                    if key not in self.params.keys():
-                        self.params[key] = Data.empty( 
-                            resample_type=self.resample_type, 
-                            shape = None, #each parameter is a one-dimensional object hence no additional shape
-                            Nresample=self.Nresample,
-                            # locked_mean allows to fix the value of the mean using the setter function params[key].mean
-                            # such that the getter function params[key].mean does not recompute the mean from the 
-                            # resamples (as per default)
-                            locked_mean = True 
-                        )
-
-                    # extract the parameter
-                    self.params[key].mean = gv.mean(nlf.p[key])
-
-                    if nlf.prior is not None:
-                        # if key not in self.priors:
-                        #     self.priors[key] = Data.empty(resample_type = self.resample_type, shape=None, Nresample=self.Nresample, dtype=object)
-                        self.priors[key] = Prior.import_from_lsqfit(nlf.prior)[key]
-
-            # These will not be serialized!
-            self.fit_output = nlf
-
-            # Extract fit statistics
-            self.chi2.mean = nlf.chi2
-            self.p_value.mean = nlf.Q
-            self.AIC.mean = self.calculate_AIC(nlf.chi2)
-
-    def import_from_linear_regression(self, target_data, result_params, design_matrix, weight_matrix, parameter_names, nres = None):
-        if not bool(self.params):
-            self.params = {}
-
-        # deduce if we have an intercept or not by checking how many parameters we have
+        Parameters
+        ----------
+        target_data : np.ndarray
+            The ordinate values that were fitted (mean or one resample).
+        result_params : np.ndarray
+            Best-fit parameter vector, ordered like *parameter_names*.
+        design_matrix : np.ndarray, shape (N, p)
+            Design matrix X used in the fit.
+        weight_matrix : np.ndarray, shape (N, N)
+            Weight matrix W = C^{-1}.
+        parameter_names : tuple[str, ...]
+            Names of the fit parameters.
+        nres : int | None
+            Resample index.  ``None`` → central-value fit.
+        """
         has_intercept = len(result_params) == 2
 
         if self.fcn is None:
             if has_intercept:
-                self.fcn = lambda x,p: x*p[parameter_names[0]] + p[parameter_names[1]]
+                m_key, b_key = parameter_names
+                self.fcn = lambda x, p: x * p[m_key] + p[b_key]
             else:
-                self.fcn = lambda x,p: x*p[parameter_names[0]]
+                (m_key,) = parameter_names
+                self.fcn = lambda x, p: x * p[m_key]
 
         if self.dof is None:
             self.dof = self.Ndata - len(result_params)
 
-        if nres is not None:
-            # check that the dictionary is set and fillable
-            if not bool(self.params):
-                self.params = {}
+        # Closed-form parameter covariance: C = (X^T W X)^{-1}
+        try:
+            param_cov  = np.linalg.inv(design_matrix.T @ weight_matrix @ design_matrix)
+            param_sdev = np.sqrt(np.diag(param_cov))
+        except np.linalg.LinAlgError:
+            param_sdev = np.full(len(result_params), np.nan)
 
-            # calculate Gaussian error propagation
-            # cov = np.linalg.inv(design_matrix.T @ weight_matrix @ design_matrix)
-            
-            for key_id,key in enumerate(parameter_names):
-                if key not in self.params.keys():
-                    self.params[key] = Data.empty( 
-                        resample_type = self.resample_type, 
-                        shape         = None, #each parameter is a one-dimensional object hence no additional shape
-                        Nresample     = self.Nresample,
-                        # locked_mean allows to fix the value of the mean using the setter function params[key].mean
-                        # such that the getter function params[key].mean does not recompute the mean from the 
-                        # resamples (as per default)
-                        locked_mean = True 
-                    )
-                    
-                self.params[key].rspl[nres] = result_params[key_id]
-
-            result = design_matrix @ result_params
-            residuals = target_data - result
-
-            self.chi2.rspl[nres] = residuals.T @ weight_matrix @ residuals # no priors in this fit
-            self.p_value.rspl[nres] = gammaincc(self.dof/2, self.chi2.rspl[nres]/2)
-            self.AIC.rspl[nres] = self.calculate_AIC( self.chi2.rspl[nres] )
-
-            self.priors = None
-
-        # central value fit
-        else: 
-            # calculate Gaussian error propagation
-            # ToDo: Data is currently not set up to execute gaussian error prop (resample is requred)
-            # cov = np.linalg.inv(design_matrix.T @ weight_matrix @ design_matrix)
-            
-            for key_id,key in enumerate(parameter_names):
-                # if the parameter is without the log phrase we simple add it as parameter
-                # check if the resample array exists. If not set it
-                # dtype = object allows to store gvar.gvar instances 
-                if key not in self.params.keys():
-                    self.params[key] = Data.empty( 
-                        resample_type = self.resample_type, 
-                        shape         = None, #each parameter is a one-dimensional object hence no additional shape
-                        Nresample     = self.Nresample,
-                        # locked_mean allows to fix the value of the mean using the setter function params[key].mean
-                        # such that the getter function params[key].mean does not recompute the mean from the 
-                        # resamples (as per default)
-                        locked_mean = True 
-                    )
-                    
-                self.params[key].mean = result_params[key_id]
-
-            result = design_matrix @ result_params
-            residuals = target_data - result
-
-            self.chi2.mean = residuals.T @ weight_matrix @ residuals # no priors in this fit
-            self.p_value.mean = gammaincc(self.dof/2, self.chi2.mean/2)
-            self.AIC.mean = self.calculate_AIC( self.chi2.mean )
-
-            self.prior = None
-        # end else
-
-    def import_from_iminuit(self, minuit: Any, Ndata: int, model: Callable, variable_projection: dict[str,float] | None = None,prior: dict[str,Prior] | None = None, nres: None | int = None) -> None:
-        """
-            @param nlf: lsqfit.nonlinear_fit, lsqfit fit result. 
-            @param nres: int, resample ID imports the fit result into the resample arrays at position nres. If none, the central value fit fields
-                              are populated
-            save the results from a lsqfit, if nres is given then save in corresponding row nres of the bootstrap parameters
-        """
-        # if the functional form hasn't been set we populate it here
-        if self.fcn is None:
-            self.fcn = model
-
-        # if the degree of freedom hasn't been set we populate it here
-        if self.dof is None:
-            if prior is None:
-                self.dof = Ndata - len(minuit.params)
+        for idx, key in enumerate(parameter_names):
+            self._ensure_param(key)
+            self._ensure_hessian_err(key)
+            if nres is None:
+                self.params[key].mean             = result_params[idx]
+                self.params_hessian_err[key].mean = param_sdev[idx]
             else:
-                self.dof = Ndata - len(minuit.params) + len(prior.keys()) 
+                self.params[key].rspl[nres]              = result_params[idx]
+                self.params_hessian_err[key].rspl[nres]  = param_sdev[idx]
 
-            if variable_projection is not None:
-                # linear parameters are dependend on the non-linear ones,
-                # should they count as dof? If not comment:
-                self.dof -= len(variable_projection)
-                # pass
-                
+        # Priors are not used in linear regression.
+        self.priors = {}
 
-        # if nres is provided populate the resample fields at position nres
-        if nres is not None:
-            # check that the dictionary is set and fillable
-            if not bool(self.params):
-                self.params = {}
-
-            # loop over all fit parameter keys
-            for param in minuit.params:  
-                key = param.name 
-
-                # check if the resample array exists. If not set it
-                if key not in self.params.keys():
-                    self.params[key] = Data.empty( 
-                        resample_type=self.resample_type, 
-                        shape = None, #each parameter is a one-d object hence no additional shape
-                        Nresample=self.Nresample,
-                        # locked_mean allows to fix the value of the mean using the setter function params[key].mean
-                        # such that the getter function params[key].mean does not recompute the mean from the 
-                        # resamples (as per default)
-                        locked_mean = True 
-                    )
-
-                # extract the parameter
-                self.params[key].rspl[nres] = param.value
-
-                # if prior is not None:
-                #     if key not in self.priors:
-                #         self.priors[key] = Data.empty(resample_type = self.resample_type, shape=None, Nresample=self.Nresample, dtype=object)
-                #     self.priors[key].rspl[nres] = prior
-
-            if variable_projection is not None:
-                for key, param in variable_projection.items():  
-                    # check if the resample array exists. If not set it
-                    if key not in self.params.keys():
-                        self.params[key] = Data.empty( 
-                            resample_type=self.resample_type, 
-                            shape = None, #each parameter is a one-d object hence no additional shape
-                            Nresample=self.Nresample,
-                            # locked_mean allows to fix the value of the mean using the setter function params[key].mean
-                            # such that the getter function params[key].mean does not recompute the mean from the 
-                            # resamples (as per default)
-                            locked_mean = True 
-                        )
-
-                    # extract the parameter
-                    self.params[key].rspl[nres] = param
-
-            # These will not be serialized!
-            if not hasattr(self, "fit_output_rspl"):
-                self.fit_output_rspl:list[object] = [None]*self.Nresample
-            self.fit_output_rspl[nres] = minuit
-
-            # Extract fit statistics
-            self.chi2.rspl[nres] = minuit.fval
-            self.p_value.rspl[nres] = gammaincc(self.dof/2, self.chi2.rspl[nres]/2)
-            self.AIC.rspl[nres] = self.calculate_AIC( self.chi2.rspl[nres] )
-            
-
-        # central value fit (if nres is None)
-        else:
-            if not bool(self.params):
-                self.params = {}
-
-            # this is only added for testing purpose, will not be serialized!
-            self.number_function_calls = minuit.nfcn
-
-            # loop over all fit parameter keys
-            for param in minuit.params:
-                key = param.name 
-
-                if key not in self.params.keys():
-                    self.params[key] = Data.empty( 
-                        resample_type=self.resample_type, 
-                        shape = None, #each parameter is a one-dimensional object hence no additional shape
-                        Nresample=self.Nresample,
-                        # locked_mean allows to fix the value of the mean using the setter function params[key].mean
-                        # such that the getter function params[key].mean does not recompute the mean from the 
-                        # resamples (as per default)
-                        locked_mean = True 
-                    )
-
-                # extract the parameter
-                self.params[key].mean = param.value
-
-                if prior is not None:
-                    # if key not in self.priors:
-                    #     self.priors[key] = Data.empty(resample_type = self.resample_type, shape=None, Nresample=self.Nresample, dtype=object)
-                    self.priors[key] = prior[key]
-
-            if variable_projection is not None:
-                for key, param in variable_projection.items():  
-                    # check if the resample array exists. If not set it
-                    if key not in self.params.keys():
-                        self.params[key] = Data.empty( 
-                            resample_type=self.resample_type, 
-                            shape = None, #each parameter is a one-d object hence no additional shape
-                            Nresample=self.Nresample,
-                            # locked_mean allows to fix the value of the mean using the setter function params[key].mean
-                            # such that the getter function params[key].mean does not recompute the mean from the 
-                            # resamples (as per default)
-                            locked_mean = True 
-                        )
-
-                    # extract the parameter
-                    self.params[key].mean = param
-
-            # These will not be serialized!
-            self.fit_output = minuit
-
-            # Extract fit statistics
-            self.chi2.mean = minuit.fval
-            self.p_value.mean =  gammaincc(self.dof/2, self.chi2.mean/2)
-            self.AIC.mean = self.calculate_AIC(self.chi2.mean)
-
-# end of class: FitResult 
-
+        # chi2 = r^T W r
+        residuals = target_data - design_matrix @ result_params
+        chi2      = float(residuals.T @ weight_matrix @ residuals)
+        self._store_fit_quality(chi2, nres)

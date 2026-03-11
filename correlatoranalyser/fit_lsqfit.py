@@ -1,339 +1,251 @@
 from collections.abc import Callable
 
-import warnings
-
 import numpy as np
-
 import gvar as gv
-
 import lsqfit
-
 import multiprocess as mp
-
 from dill import dumps, loads
 
 from .data import Data
-
+from .prior import Prior
 from .fitResult import FitResult
+from .fit_helper import _validate_inputs, _get_p0, _get_abscissa
 
-def execute_fit(fit_args: list[dict] | dict, nres: list[int] | None, pickle:bool = False) -> dict:
-    out_dict = {
-        "nres": nres,
-        "nlf" : None if nres is None else [None] * len(nres),
-        "error":None if nres is None else [None] * len(nres),
-    }
+# =============================================================================
+# lsqfit argument builder
+# =============================================================================
 
-    # central value fits 
+def _build_lsqfit_args(abscissa, ordinate_gvar, model, prior, p0, correlated, svdcut, maxiter):
+    """Return a kwargs dict ready to pass to lsqfit.nonlinear_fit."""
+    args = {"fcn": model, "maxit": maxiter}
+
+    if svdcut is not None:
+        args["svdcut"] = svdcut
+
+    if prior is not None:
+        args["prior"] = {
+            k: prior[k].gvar() if prior[k].dist == "normal" else gv.log(prior[k].gvar())
+            for k in prior
+        }
+        # lsqfit uses "log(key)" notation for log-normal priors
+        args["prior"] = {
+            (k if prior[k].dist == "normal" else f"log({k})"): prior[k].gvar()
+            for k in prior
+        }
+    else:
+        args["p0"] = p0
+
+    data_key = "data" if correlated else "udata"
+    args[data_key] = (abscissa, ordinate_gvar)
+
+    return args
+
+
+# =============================================================================
+# Single-fit executor
+# =============================================================================
+
+def _execute_fit(fit_args, nres=None, pickle=False):
+    """
+    Run one or many lsqfit.nonlinear_fit calls.
+
+    Parameters
+    ----------
+    fit_args : dict | array of dict
+        Single args dict (central value) or array indexed by resample.
+    nres : None | list[int]
+        None  → single central-value fit.
+        list  → resample fits for those indices.
+    pickle : bool
+        Serialise the nlf objects with dill (needed for multiprocessing).
+
+    Returns
+    -------
+    dict with keys 'nres', 'nlf', 'error'.
+    """
+    def _fit_one(args):
+        return lsqfit.nonlinear_fit(**args)
+
     if nres is None:
+        out = {"nres": None, "nlf": None, "error": None}
         try:
-            nlf = lsqfit.nonlinear_fit(**fit_args)
-            if pickle:
-                out_dict["nlf"] = dumps(nlf)
-            else:
-                out_dict["nlf"] = nlf
+            nlf = _fit_one(fit_args)
+            out["nlf"] = dumps(nlf) if pickle else nlf
         except Exception as e:
-            out_dict["error"] = e 
-    # resample fits fot a set of resamples provided in nres
-    elif isinstance(nres,list):
-        for res_id, _ in enumerate(nres):
-            try:
-                nlf = lsqfit.nonlinear_fit(**(fit_args[res_id]))
-                if pickle:
-                    out_dict["nlf"][res_id] = dumps(nlf)
-                else:
-                    out_dict["nlf"][res_id] = nlf
-            except Exception as e:
-                out_dict["error"][res_id] = e
-    else: 
-        raise ValueError(f"nres must but list of ints but is {type(nres)}: {nres}")
-    
-    return out_dict
+            out["error"] = e
+        return out
+
+    n   = len(nres)
+    out = {"nres": nres, "nlf": [None] * n, "error": [None] * n}
+    for res_id in range(n):
+        try:
+            nlf = _fit_one(fit_args[res_id])
+            out["nlf"][res_id] = dumps(nlf) if pickle else nlf
+        except Exception as e:
+            out["error"][res_id] = e
+    return out
+
+
+def _execute_fit_parallel(fit_args, nres, pickle=True):
+    """Wrapper with pickle=True for use in mp.Pool.starmap."""
+    return _execute_fit(fit_args, nres=nres, pickle=pickle)
+
+
+# =============================================================================
+# Public interface
+# =============================================================================
 
 def fit_lsqfit(
     *,
     abscissa: Data | np.ndarray,
     ordinate: Data,
-    # fit strategy, default: only uncorrelated central value fit:
+    # Fit strategy
     central_value_fit: bool = True,
     central_value_fit_correlated: bool = False,
     resample_fit: bool = False,
     resample_fit_correlated: bool = False,
-    resample_fit_resample_prior: bool = True,
-    # args for lsqfit:
+    # Model and parameters
     model: Callable | None = None,
-    prior: dict | None = None,
+    prior: dict[str, Prior] | None = None,
     p0: dict | None = None,
     svdcut: float | None = None,
     maxiter: int = 10_000,
-    # optional parallelization:
-    Nproc: int | None = None
+    # Parallelisation
+    Nproc: int | None = None,
 ) -> FitResult:
-    r"""!
-        @param abscissa: datapoints for the x-axis (i.e. an array containing Nt times (shape (Nt,))
-        @param ordinate_est: datapoints for the y-axis (i.e. an array containing the datapoints measured at Nt times (shape (Nt,))
-        @param ordinate_std: standard deviation of the given y datapoints (i.e. an array containing the error of the measured datapoints (shape (Nt,))
-        @param ordinate_cov: covariance matrix of the y datapoints to specify the correlation betweem them
-        @param resample_ordinate_est: datapoints for the y-axis for each resample (array of shape (Nres,Nt))
-        @param resample_ordinate_std: standard deviation of the datapoints for each resample (array of shape (Nres,Nt) or (Nt,), the latter uses the given variance for all resamples)
-        @param resample_ordinate_cov: covariance matrix of the datapoints for each resample (array of shape (Nres,Nt,Nt) or (Nt,Nt), the latter uses the given covariance matrix for all resamples)
+    r"""
+    Fit using lsqfit (Peter Lepage) as the backend.
 
-        @param central_value_fit: option whether a central value fit should be performed (default: True)
-        @param central_value_fit_correlated: option whether correlated fit should be performed (default: False)
-        @param resample_fit: option whether a resample fit should be performed (delfault: False)
-        @param resample_ft_corrrelated: option whether a correlated resample fit should be performed (default: False)
-        @param resample_fit_resample_prior: option whether the meanvalue of the prior should be resampled for each resample, without resampling (option 'False') the same meanvalue for the prior is used for all resamples (default: True)
-        @param resample_type: a string representing a resample type (None, 'bst' bootstrap, 'jkn' jackknife). This is passed to the FitResult to determine error calculation.
+    Parameters
+    ----------
+    abscissa : Data | np.ndarray
+        Independent variable(s). If Data, resamples are used for resample fits.
+    ordinate : Data
+        Dependent variable with resample information.
+    central_value_fit : bool
+        Fit to the central value (mean) of the ordinate. (default: True)
+    central_value_fit_correlated : bool
+        Use the full covariance matrix for the central value fit. (default: False)
+    resample_fit : bool
+        Fit every resample. (default: False)
+    resample_fit_correlated : bool
+        Use the full covariance matrix for resample fits. (default: False)
+    model : callable
+        Model function with signature ``model(abscissa, params_dict) -> np.ndarray``.
+        Must be compatible with gvar arithmetic.
+    prior : dict[str, Prior] | None
+        Gaussian or log-normal priors keyed by parameter name.
+    p0 : dict | None
+        Initial parameter values. Used when prior is None.
+    svdcut : float | None
+        SVD cut passed directly to lsqfit.
+    maxiter : int
+        Maximum iterations. (default: 10 000)
+    Nproc : int | None
+        Parallel processes for resample fits. Serial if None.
 
-        @param model: the function to be fit to the datapoints, arguments should be the abscissa and the fit parameters
-        @param prior: a priori estimates for the fit parameters (default: None)
-        @param p0: start value for the fit parameters (default:None)
-        @param maxiter: the maximum of iterations to perform the fit (default: 10_000)
-        @param Nproc: Number of processes (cpus) to parallelize the resample fits. Seriell if None (default = None) 
-
-        This function peforms a fit using lsqfit by Peter Lapage. Default is an uncorrelated central value fit.
-        Optional are a correlated central value fit and a correlated (uncorrelated) resample fit. A FitResult is then returned
+    Returns
+    -------
+    FitResult
     """
-
-    # Ensure that we got at least one fitting strategy (both are possible and will be handled accordingly)
     if not (central_value_fit or resample_fit):
-        raise ValueError(f"At least one fit strategy needs to be defined: central_value_fit or resample_fit")
+        raise ValueError("At least one of central_value_fit or resample_fit must be True.")
 
+    _validate_inputs(abscissa, ordinate, model, prior, p0)
 
-    # check if the given arguments have the correct dimensions:
-    
-    # The first axis defines the number of points, we may allow abscissas with more than one dimension
-    # where the user needs to ensure that the respective model function fcn(abscissa, p) -> np.array
-    # reduces to the output shape of the ordinate. 
-    # e.g. in Lattice QCD we may analyse 3-point correlators with a source-sink separation t and an 
-    # insertion time tau: C3pt(t,tau). 
-    # Now one wants to fit multiple t,tau data points thus organizes the data such that
-    # abscissa = [(t1,0), (t1,1), ..., (t1,t1+1), (t2,0), ... (t2,t2+1), ... ]
-    # and respectively 
-    # ordinate_est = [ C3pt(t1,0), C3pt(t1,1), ..., C3pt(t1,t1+1), ... ]
-    # Then abscissa is two dimensional and the size of the first axis equals the number of data points
-    # to fit against. 
-    Nres = ordinate.Nresample
+    Nres       = ordinate.Nresample
+    start_vals = _get_p0(prior, p0)
 
-    if isinstance(abscissa, Data):
-        if abscissa.Nresample != ordinate.Nresample:
-            raise RuntimeError(f"abscissa {(abscissa)} doesn't match ordinate ({ordinate}) in number of resamples")
+    # ------------------------------------------------------------------
+    # Initialise FitResult
+    # ------------------------------------------------------------------
+    fit_result = FitResult(
+        abscissa      = abscissa,
+        Nresample     = Nres if resample_fit else None,
+        resample_type = ordinate.resample_type if resample_fit else None,
+    )
 
-    # The organization of resample_ordinate_est.shape = Nres, Nt, ...
-    # i.e. the second axis must match the first axis of abscissa. 
-    # Further, dimensions are ignored and must be handled by the fit model
-    if ordinate.shape[0] != abscissa.shape[0]:
-        raise ValueError(f"Expecting ordinate shape ({ordinate.shape}) to match abscissa shape ({abscissa.shape})")
-    
-    # Check the existence of the model function
-    if model is None:
-        raise ValueError(f"A model for the fit is required, the function should have abscissa and the parameters as an argument")
-
-    # Determine if we work with priors or simple start parameters
-    if prior is None and p0 is None:
-        raise ValueError(f"At least one of prior or p0 needs to be defined")
-    
-    # ##############################################################################################
-    # ##############################################################################################
-    # Now all relevant parameters are there and have the expected shapes. 
-    # We can now fill a dictionary args that is providing relevant information to the underlying fitter
-    # provided by lsqfit  
-    # ##############################################################################################
-    # ##############################################################################################
-
-    # prepare the arguments for lsqfit
-    args = {}
-
-    # populate the fit function
-    args["fcn"] = model
-
-    # populate a maximal iteration for the minimizer
-    args["maxit"] = maxiter
-
-    # populate the prior/start parameter
-    if prior is not None:
-        args["prior"] = {}
-        for key in prior.keys():
-            if prior[key].dist == "normal":
-                args["prior"][key] = prior[key].gvar()
-            elif prior[key].dist == "log-normal":
-                args["prior"][f"log({key})"] = prior[key].gvar()
-    else:
-        args["p0"] = p0
-
-    # svdcut is optional
-    if svdcut is not None:
-        args["svdcut"] = svdcut
-
-    # define a FitResult that can be returned
-    if resample_fit:
-        # prepare for saving the resamples and possible central value fit results
-        fit_result = FitResult(
-            # abscissa used in the fit
-            abscissa = abscissa,
-            # number of resamples
-            Nresample = ordinate.Nresample, 
-            # resample type
-            resample_type = ordinate.resample_type
-        )  
-    else: 
-        # prepare for central value fit results only
-        fit_result = FitResult(
-            abscissa=abscissa,
-        ) 
-
-    # prepare data for the central value fit:
+    # ------------------------------------------------------------------
+    # Central value fit
+    # ------------------------------------------------------------------
     if central_value_fit:
-        ordinate_gvar = ordinate.gvar(
-            correlated = central_value_fit_correlated
+        x_cv          = _get_abscissa(abscissa)
+        ordinate_gvar = ordinate.gvar(correlated=central_value_fit_correlated)
+
+        fit_args = _build_lsqfit_args(
+            x_cv, ordinate_gvar, model, prior, start_vals,
+            central_value_fit_correlated, svdcut, maxiter
         )
 
-        # Ensure un-/correlated fits are preformed by providing the correct data form to lsqfit
-        # data :   correlated fit
-        # udata: uncorrelated fit
-        if isinstance(abscissa,Data):
-            args["data" if central_value_fit_correlated else "udata"] = (abscissa.mean, ordinate_gvar)
-        else:
-            args["data" if central_value_fit_correlated else "udata"] = (abscissa, ordinate_gvar)
+        res = _execute_fit(fit_args)
+        if res["error"] is not None:
+            raise res["error"]
 
+        fit_result.import_from_lsqfit(nlf=res["nlf"])
 
-        # ##############################################################################################
-        # Now all required fields in args are populated to attempt a fit 
-        # ##############################################################################################
-        res_dict = execute_fit(fit_args=args, nres=None)
-
-        if res_dict["error"] is not None:
-            raise res_dict["error"]
-
-        fit_result.import_from_lsqfit(nlf=res_dict["nlf"])
-    # end if central value fit
-    
-    # If no resampled fits are supposed to be done we can return here
     if not resample_fit:
         return fit_result
 
-    
-    # collect all the data for resample fits
+    # ------------------------------------------------------------------
+    # Build per-resample fit arguments
+    # ------------------------------------------------------------------
     args = np.empty(Nres, dtype=object)
     for nres in range(Nres):
-        # prepare the arguments for lsqfit
-        args[nres] = {}
-
-        # populate the fit function
-        args[nres]["fcn"] = model
-
-        # populate a maximal iteration for the minimizer
-        args[nres]["maxit"] = maxiter
-
-        # populate the prior/start parameter
-        # This may be resampled according to resample_fit_resample_prior
-        if prior is not None:
-            args[nres]["prior"] = {}
-            for key in prior.keys():
-                if prior[key].dist == "normal":
-                    args[nres]["prior"][key] = prior[key].gvar()
-                elif prior[key].dist == "log-normal":
-                    args[nres]["prior"][f"log({key})"] = prior[key].gvar()
-        else:
-            args[nres]["p0"] = p0
-
-        # svdcut is optional
-        if svdcut is not None:
-            args[nres]["svdcut"] = svdcut
+        x_rs = _get_abscissa(abscissa, nres)
 
         ordinate_gvar = gv.gvar(
-            ordinate.rspl[nres], 
-            ordinate.cov if resample_fit_correlated else ordinate.serr
+            ordinate.rspl[nres],
+            ordinate.cov if resample_fit_correlated else ordinate.serr,
         )
 
-        # Ensure un-/correlated fits are preformed by providing the correct data form to lsqfit
-        # data :   correlated fit
-        # udata: uncorrelated fit
-        if isinstance(abscissa,Data):
-            args[nres]["data" if central_value_fit_correlated else "udata"] = (abscissa.rspl[nres], ordinate_gvar)
-        else:
-            args[nres]["data" if central_value_fit_correlated else "udata"] = (abscissa, ordinate_gvar)
+        args[nres] = _build_lsqfit_args(
+            x_rs, ordinate_gvar, model, prior, start_vals,
+            resample_fit_correlated, svdcut, maxiter
+        )
 
-        # ToDo: Something is wrong here...
-        # varying the prior mean value for each resample sample, to avoid bias
-        # if prior is not None and resample_fit_resample_prior:
-        #     prior_res = gv.BufferDict()
-
-        #     #we resample the prior in the standard way if the bootstrap is used
-        #     if ordinate.resample_type == 'bst':
-        #         for key in args[nres]["prior"].keys():
-        #             prior_res[key] = gv.gvar(gv.sample(prior[key].gvar(), 1), prior[key].sdev)
-
-        #     #if instead the jackknife resampling is being used, the resampple of the prior should be done with a std smaller by a factor of sqrt(Nres-1)
-        #     elif ordinate.resample_type == 'jkn':
-        #         for key in prior.keys():
-        #             prior_res[key] = gv.gvar(gv.sample( gv.gvar(prior[key].mean, prior[key].sdev/np.sqrt(Nres-1)), 1), prior[key].sdev)
-            
-        #     args[nres]["prior"] = prior_res
-
-        # # ##############################################################################################
-        # # Now all required fields in args are populated to attempt a fit 
-        # # ##############################################################################################
-
+    # ------------------------------------------------------------------
+    # Execute resample fits (serial or parallel)
+    # ------------------------------------------------------------------
     if Nproc is None:
-        out_dict = execute_fit(args, nres=list(range(Nres)), pickle=False)
+        out = _execute_fit(args, nres=list(range(Nres)))
+        errors = [(n, out["error"][n]) for n in range(Nres) if out["error"][n] is not None]
+        if errors:
+            n, err = errors[0]
+            raise RuntimeError(f"Resample fit failed at nres={n}: {err}") from err
         for nres in range(Nres):
-            if out_dict["error"][nres] is not None:
-                raise out_dict["error"][nres]
-            fit_result.import_from_lsqfit(out_dict["nlf"][nres],nres=nres)
+            fit_result.import_from_lsqfit(out["nlf"][nres], nres=nres)
 
     else:
-        # compute the number of resamples that have to be done by any process
-        Nblock = Nproc
-        blockSize = Nres // Nblock
-        Nrest  = Nres - (blockSize * Nblock)
+        blockSize = Nres // Nproc
+        Nrest     = Nres % Nproc
 
-        inputs = []
-        for nblock in range(Nblock):
-            res_slice = np.s_[ nblock*blockSize: (nblock+1)*blockSize ]
-            inputs.append((
-                args[res_slice], # list of dicts: fit_args 
-                np.arange(Nres)[res_slice].tolist(), # list of resample ids: nres
-                True, # flag to pickle the output: pickle
-                )
-            )
+        slices = [np.s_[b * blockSize : (b + 1) * blockSize] for b in range(Nproc)]
+        if Nrest:
+            slices.append(np.s_[Nproc * blockSize :])
 
-        if Nrest > 0:
-            res_slice = np.s_[ Nblock*blockSize: ]
-            inputs.append((
-                args[res_slice], # list of dicts: fit_args 
-                np.arange(Nres)[res_slice].tolist(), # list of resample ids: nres
-                True, # flag to pickle the output: pickle
-            ))
+        inputs = [
+            (args[sl], np.arange(Nres)[sl].tolist(), True)
+            for sl in slices
+        ]
 
         with mp.Pool(processes=Nproc) as pool:
-            results = pool.starmap(execute_fit, inputs)
+            results = pool.starmap(_execute_fit_parallel, inputs)
 
-        # Now collect results and import them into FitResult
         errors = []
         for result in results:
-            for res_id,nres in enumerate(result["nres"]):
-                
+            for res_id, nres in enumerate(result["nres"]):
                 if result["error"][res_id] is not None:
-                    errors.append((nres, result["error"]))
+                    errors.append((nres, result["error"][res_id]))
                     continue
-
-                # load the nonlinear fit object while preserving correlations
                 try:
                     nlf = loads(result["nlf"][res_id])
-                except Exception as e:
-                    errors.append((nres, f"gvar.load failed for nres={nres}: {e}"))
-                    continue
-
-                # finally import into FitResult
-                try:
                     fit_result.import_from_lsqfit(nlf=nlf, nres=nres)
                 except Exception as e:
-                    errors.append((nres, f"import_from_lsqfit failed for nres={nres}: {e}"))
+                    errors.append((nres, f"import_from_lsqfit failed: {e}"))
 
         if errors:
             for nres, err in errors:
-                print(f"[parallel_run] nres={nres} error: {err}")
-            raise RuntimeError("Found errors during execution of bootstrap fits")
+                print(f"Resample fit failed at nres={nres}: {err}")
+            raise RuntimeError(f"{len(errors)} resample fit(s) failed.")
 
     return fit_result
-

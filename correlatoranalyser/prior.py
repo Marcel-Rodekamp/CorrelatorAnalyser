@@ -1,97 +1,146 @@
-import numpy as np 
+from __future__ import annotations
+
+import numpy as np
 import h5py as h5
 from typing import Self
 
+# Valid distribution names and their canonical form
+_VALID_DISTS = {
+    "normal"    : "normal",
+    "log-normal": "log-normal",
+    "log"       : "log-normal",
+}
+
+
 class Prior:
-    mean: float 
-    sdev: float 
+    """
+    A simple Gaussian or log-normal prior for use in chi-squared fits.
 
-    dist: str 
+    The prior contribution to chi-squared is
 
-    def __init__(self, mean:float, sdev:float, dist = 'normal'):
-        self.mean:float = mean
-        self.sdev:float = sdev
+        normal:     ((theta - mean) / sdev)^2
+        log-normal: ((log(theta) - mean) / sdev)^2
 
-        if dist == 'normal':
-            self._eval = self.normal
-            self.dist = dist
-        elif dist == 'log' or dist == 'log-normal':
-            self._eval = self.log_normal
-            self.dist = 'log-normal'
-        else:
-            raise RuntimeError(
-                f"dist must be one of:\n"
-               +f"    - 'normal': normal distribution\n"
-               +f"    - 'log-normal', 'log': log-normal distribution\n"
-               +f"But is: {dist}"
+    Parameters
+    ----------
+    mean : float
+        Central value of the prior.
+        For log-normal this is the mean of log(theta), not of theta itself.
+    sdev : float
+        Standard deviation of the prior.
+    dist : str
+        Distribution family: 'normal', 'log-normal', or 'log'. (default: 'normal')
+    """
+
+    mean: float
+    sdev: float
+    dist: str
+
+    def __init__(self, mean: float, sdev: float, dist: str = "normal") -> None:
+        if dist not in _VALID_DISTS:
+            raise ValueError(
+                f"dist must be one of {list(_VALID_DISTS)}, got '{dist}'"
             )
+        if sdev <= 0:
+            raise ValueError(f"sdev must be positive, got {sdev}")
+
+        self.mean = float(mean)
+        self.sdev = float(sdev)
+        self.dist = _VALID_DISTS[dist]
+
+    # ------------------------------------------------------------------
+    # Evaluation
+    # ------------------------------------------------------------------
+
+    def __call__(self, theta: float) -> float:
+        """Return the prior chi-squared contribution at parameter value theta."""
+        if self.dist == "normal":
+            return ((theta - self.mean) / self.sdev) ** 2
+        else:
+            if theta <= 0:
+                raise ValueError(
+                    f"log-normal prior requires theta > 0, got {theta}"
+                )
+            return ((np.log(theta) - self.mean) / self.sdev) ** 2
+
+    # ------------------------------------------------------------------
+    # gvar interoperability
+    # ------------------------------------------------------------------
 
     def gvar(self):
-        import gvar as gv 
-
-        if self.dist == "normal":
-            return gv.gvar( self.mean, self.sdev )
-        else:
-            return gv.log(gv.gvar( self.mean, self.sdev ))
-
-        
-    def normal(self, theta:float) -> float:
-        return ((theta - self.mean)/self.sdev)**2
-
-    def log_normal(self,theta:float) -> float:
-        if theta <= 0:
-            raise RuntimeError(f"found {theta=} <= 0 in log-normal distribution: {self}")
-        return ((np.log(theta) - self.mean)/self.sdev)**2
-
-    def __call__(self, theta:float) -> float:
-        return self._eval(theta) 
-
-    @staticmethod
-    def import_from_lsqfit(prior:dict) -> dict[str,Self]:
+        """Return a gvar.GVar representation of this prior."""
         import gvar as gv
 
-        out:dict[str,Self] = {}
+        g = gv.gvar(self.mean, self.sdev)
+        return gv.log(g) if self.dist == "log-normal" else g
+
+    # ------------------------------------------------------------------
+    # lsqfit interoperability
+    # ------------------------------------------------------------------
+
+    @staticmethod
+    def import_from_lsqfit(prior: dict) -> dict[str, Prior]:
+        """
+        Convert a lsqfit prior dict (values are gvar.GVar) back to Prior objects.
+
+        lsqfit encodes log-normal priors as ``"log(key)"`` keys.
+        """
+        import gvar as gv
+
+        out: dict[str, Prior] = {}
         for key, value in prior.items():
-            if 'log' in key:
-                key_ = key[4:-1]
-                out[key_] = Prior( mean = gv.exp(gv.mean(value)), sdev=gv.sdev(value), dist='log-normal' ) 
+            if key.startswith("log(") and key.endswith(")"):
+                param_name = key[4:-1]
+                out[param_name] = Prior(
+                    mean = float(gv.mean(gv.exp(value))),
+                    sdev = float(gv.sdev(value)),
+                    dist = "log-normal",
+                )
             else:
-                out[key] = Prior( mean = gv.mean(value), sdev=gv.sdev(value), dist='normal' ) 
+                out[key] = Prior(
+                    mean = float(gv.mean(value)),
+                    sdev = float(gv.sdev(value)),
+                    dist = "normal",
+                )
+        return out
 
-        return out             
+    # ------------------------------------------------------------------
+    # HDF5 serialisation
+    # ------------------------------------------------------------------
 
-    def serialize(self, h5f: h5.Group, node:str|None = None) -> None:
-        if node is None:
-            grp = h5f
-        else:
-            if node not in h5f:
-                h5f.create_group(node)    
-            grp = h5f[node]
-
+    def serialize(self, h5f: h5.Group, node: str | None = None) -> None:
+        """Write this prior into an HDF5 group."""
+        grp = h5f if node is None else h5f.require_group(node)
         grp.create_dataset("mean", data=self.mean)
         grp.create_dataset("sdev", data=self.sdev)
         grp.create_dataset("dist", data=self.dist)
-    
-    @staticmethod
-    def deserialize(h5f: h5.Group, node:str|None = None) -> Self:
-        if node is None:
-            grp = h5f
-        else:
-            grp = h5f[node]
 
-        new:Prior = Prior(
-            mean=grp["mean"][()],
-            sdev=grp["sdev"][()],
-            dist=grp["dist"][()].decode('utf-8'),
+    @staticmethod
+    def deserialize(h5f: h5.Group, node: str | None = None) -> Prior:
+        """Read a prior from an HDF5 group."""
+        grp = h5f if node is None else h5f[node]
+
+        dist = grp["dist"][()]
+        if isinstance(dist, bytes):
+            dist = dist.decode("utf-8")
+
+        return Prior(
+            mean = float(grp["mean"][()]),
+            sdev = float(grp["sdev"][()]),
+            dist = dist,
         )
 
-        return new
+    # ------------------------------------------------------------------
+    # Representation
+    # ------------------------------------------------------------------
 
-    def __repr__(self):
+    def __repr__(self) -> str:
         if self.dist == "normal":
             return f"N[μ={self.mean:g}, σ={self.sdev:g}]"
         else:
             return f"logN[μ={self.mean:g}, σ={self.sdev:g}]"
 
-
-        
+    def __eq__(self, other: object) -> bool:
+        if not isinstance(other, Prior):
+            return NotImplemented
+        return self.mean == other.mean and self.sdev == other.sdev and self.dist == other.dist
