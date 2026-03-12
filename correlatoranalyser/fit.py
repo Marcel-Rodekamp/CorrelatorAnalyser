@@ -18,7 +18,7 @@ def fit(
         return fit_lsqfit ( **kwargs )
     
     elif backend == "linear regression":
-        from .fit_linearRegression import linear_regression
+        from .fit_linear_regression import linear_regression
         return linear_regression( **kwargs )
     else:
         raise ValueError(f"Couldn't identify backkend {backend}. Must be one of ['iminuit', 'lsqfit', 'linear regression']")

@@ -275,7 +275,7 @@ class FitResult:
 
         if self.AIC_small_sample_correction:
             denominator = dK - k - 1
-            if denominator == 0:
+            if denominator <= 0:
                 raise RuntimeError(
                     f"AICc correction requires Ndata > Nparam + 1, "
                     f"but Ndata={dK}, Nparam={k}."
@@ -295,12 +295,21 @@ class FitResult:
             else "?"
         )
         resample_tag = self.resample_type if self.has_resamples else False
-        lines = [
-            f"FitResult[{abscissa_range}, Ndata={self.Ndata}, resample:{resample_tag}]:",
-            f"  χ²/dof [dof] = {self.chi2.mean / self.dof:.3g} [{self.dof}]",
-            f"  p-value      = {self.p_value.mean:.3g}",
-            f"  AIC          = {self.AIC.mean:.3g}",
-        ]
+        if self.has_resamples:
+            lines = [
+                f"FitResult[{abscissa_range}, Ndata={self.Ndata}, resample:{resample_tag}]:",
+                f"  χ²/dof [dof] = {self.chi2.mean / self.dof:.3g} [{self.dof}]",
+                f"  p-value      = {self.p_value.mean:.3g}",
+                f"  AIC          = {self.AIC.mean:.3g}",
+            ]
+        else:
+            lines = [
+                f"FitResult[{abscissa_range}, Ndata={self.Ndata}, resample:{resample_tag}]:",
+                f"  χ²/dof [dof] = {self.chi2 / self.dof:.3g} [{self.dof}]",
+                f"  p-value      = {self.p_value:.3g}",
+                f"  AIC          = {self.AIC:.3g}",
+            ]
+    
         for key, p in self.params.items():
             prior_tag = f"  [{self.priors[key]}]" if key in self.priors else ""
             hess_tag  = (
@@ -474,9 +483,14 @@ class FitResult:
         aic   = self._compute_AIC(chi2)
 
         if nres is None:
-            self.chi2.mean    = chi2
-            self.p_value.mean = p_val
-            self.AIC.mean     = aic
+            if self.has_resamples:
+                self.chi2.mean    = chi2
+                self.p_value.mean = p_val
+                self.AIC.mean     = aic
+            else:
+                self.chi2         = chi2
+                self.p_value      = p_val
+                self.AIC          = aic               
         else:
             self.chi2.rspl[nres]    = chi2
             self.p_value.rspl[nres] = p_val

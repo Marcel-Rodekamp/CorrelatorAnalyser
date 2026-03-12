@@ -72,13 +72,15 @@ def _build_varproj_uncorrelated_cost(abscissa, y_data, sdev_inv, model, nonlinea
         J       = np.asarray(model.grad(x, params) * drsqdp)
         if J.ndim > 1:
             J = J.sum(axis=tuple(range(1, J.ndim)))
+        if priors:
+            for i, key in enumerate(nonlinear_params):
+                if key in priors:
+                    J[i] += priors[key].grad(params[key])
         return J
 
     cost.errordef  = iminuit.Minuit.LEAST_SQUARES
     cost.ndata     = len(x)
     if model_has_grad:
-        if priors:
-            raise NotImplementedError("Gradient fits with priors are not yet supported.")
         cost.grad = grad
 
     # Store helpers so callers can recover linear parameter values after the fit
@@ -161,13 +163,15 @@ def _build_varproj_correlated_cost(abscissa, y_data, cov_inv, model, nonlinear_p
         J        = np.asarray(model.grad(x, params) * d_chi2_df)
         if J.ndim > 1:
             J = J.sum(axis=tuple(range(1, J.ndim)))
+        if priors:
+            for i, key in enumerate(nonlinear_params):
+                if key in priors:
+                    J[i] += priors[key].grad(params[key])
         return J
 
     cost.errordef  = iminuit.Minuit.LEAST_SQUARES
     cost.ndata     = len(x)
     if model_has_grad:
-        if priors:
-            raise NotImplementedError("Gradient fits with priors are not yet supported.")
         cost.grad = grad
 
     cost._design_matrix    = _design_matrix
@@ -187,7 +191,7 @@ def _build_varproj_correlated_cost(abscissa, y_data, cov_inv, model, nonlinear_p
 # Single-fit executor (variable projection)
 # =============================================================================
 
-def _run_minuit_varproj(least_square, p0, limits=None):
+def _run_minuit_varproj(least_square, p0, limits=None, maxiter = 10_000):
     """
     Run Minuit on a variable-projection cost function and resolve the linear
     parameters at the best-fit nonlinear values.
@@ -213,7 +217,7 @@ def _run_minuit_varproj(least_square, p0, limits=None):
             if key in minuit.parameters:
                 minuit.limits[key] = limit
 
-    minuit.migrad()
+    minuit.migrad(ncall=maxiter)
 
     # Resolve linear parameters at best-fit nonlinear values
     best_nl = {p: minuit.values[p] for p in least_square._nonlinear_params}
@@ -237,6 +241,7 @@ def _execute_fits(fit_args, nres=None):
                 fit_args["least_square"],
                 fit_args["p0"],
                 fit_args.get("limits"),
+                fit_args.get("maxiter",10_000),
             )
             out["minuit"]  = minuit
             out["varproj"] = varproj
@@ -252,6 +257,7 @@ def _execute_fits(fit_args, nres=None):
                 fit_args[res_id]["least_square"],
                 fit_args[res_id]["p0"],
                 fit_args[res_id].get("limits"),
+                fit_args[res_id].get("maxiter",10_000),
             )
             out["minuit"][res_id]  = minuit
             out["varproj"][res_id] = varproj
@@ -273,7 +279,6 @@ def fit_iminuit(
     central_value_fit_correlated: bool = False,
     resample_fit: bool = False,
     resample_fit_correlated: bool = False,
-    resample_fit_use_central_value_fit_as_start_values: bool = False,
     # Variable projection
     linear_params: list[str],
     # Model and parameters
@@ -306,9 +311,6 @@ def fit_iminuit(
         Fit every resample. (default: False)
     resample_fit_correlated : bool
         Use the full covariance matrix for resample fits. (default: False)
-    resample_fit_use_central_value_fit_as_start_values : bool
-        Initialise resample fits from the central-value best-fit parameters.
-        (default: False)
     linear_params : list[str]
         Parameter names that enter the model linearly.
     model : callable
@@ -380,7 +382,7 @@ def fit_iminuit(
                 x_cv, y_cv, 1.0 / ordinate.serr, model, nl_params, linear_params, prior, has_grad
             )
 
-        res = _execute_fits({"least_square": least_square, "p0": start_vals, "limits": limits})
+        res = _execute_fits({"least_square": least_square, "p0": start_vals, "limits": limits, "maxiter": maxiter})
         if res["error"] is not None:
             raise res["error"]
 
@@ -395,15 +397,7 @@ def fit_iminuit(
     # ------------------------------------------------------------------
     # Determine starting values for resample fits
     # ------------------------------------------------------------------
-    if resample_fit_use_central_value_fit_as_start_values:
-        if fit_result.params is None:
-            raise RuntimeError(
-                "resample_fit_use_central_value_fit_as_start_values=True requires "
-                "central_value_fit=True to have run first."
-            )
-        rs_start = {k: v.mean for k, v in fit_result.params.items() if k not in linear_params}
-    else:
-        rs_start = {k: v for k, v in start_vals.items() if k not in linear_params}
+    rs_start = {k: v for k, v in start_vals.items() if k not in linear_params}
 
     # ------------------------------------------------------------------
     # Build per-resample fit arguments
@@ -422,7 +416,7 @@ def fit_iminuit(
                 x_rs, y_rs, 1.0 / ordinate.serr, model, nl_params, linear_params, prior, has_grad
             )
 
-        args[nres] = {"least_square": least_square, "p0": rs_start, "limits": limits}
+        args[nres] = {"least_square": least_square, "p0": rs_start, "limits": limits, "maxiter":maxiter}
 
     # ------------------------------------------------------------------
     # Execute resample fits
@@ -439,22 +433,7 @@ def fit_iminuit(
                 prior=prior, Ndata=int(np.prod(ordinate.shape)), nres=nres
             )
     else:
-        flat   = _run_parallel(_execute_fits, args, Nres, Nproc)
-        errors = [(nres, err) for nres, _, err in flat if err is not None]
-        if errors:
-            for nres, err in errors:
-                print(f"Resample fit failed at nres={nres}: {err}")
-            raise RuntimeError(f"{len(errors)} resample fit(s) failed.")
-        for nres, minuit, err in flat:
-            # retrieve varproj from flat — need to re-index
-            pass  # handled below
-
-        # For parallel varproj we need (minuit, varproj) pairs — repack
-        for result in _run_parallel.__wrapped__ if hasattr(_run_parallel, "__wrapped__") else []:
-            pass
-
-        # Simpler: run parallel and collect (nres, minuit, varproj, error) directly
-        # Re-run using a wrapper that returns varproj too
+        # run using a wrapper that returns varproj too
         flat_vp = _run_parallel_varproj(_execute_fits, args, Nres, Nproc)
         errors  = [(nres, err) for nres, _, _, err in flat_vp if err is not None]
         if errors:

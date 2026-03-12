@@ -79,6 +79,13 @@ class FitState:
         New parameter keys are merged into :attr:`keys_all` so that
         :meth:`model_average` can iterate over the full parameter set.
         """
+        if len(self) > 0:
+            # check resample type and number of resamples
+            if self.fit_results[0].resample_type != fit.resample_type:
+                raise RuntimeError(f"Resample type doesn't match FitState content {self.fit_results[0].resample_type} != new: {fit.resample_type}")
+            if self.fit_results[0].Nresample != fit.Nresample:
+                raise RuntimeError(f"Number resamples doesn't match FitState content {self.fit_results[0].Nresample} != new: {fit.Nresample}")           
+
         self.fit_results.append(fit)
 
         for key in fit.params:
@@ -89,9 +96,10 @@ class FitState:
 
     def _sort(self) -> None:
         if self.sort_by == "chi2_dof":
-            self.fit_results.sort(key=lambda r: r.chi2.mean / r.dof)
+
+            self.fit_results.sort(key=lambda r: (r.chi2.mean if isinstance(r.chi2,Data) else r.chi2) / r.dof)
         else:
-            self.fit_results.sort(key=lambda r: r.AIC.mean)
+            self.fit_results.sort(key=lambda r: r.AIC.mean if isinstance(r.AIC, Data) else r.AIC)
 
     def __len__(self) -> int:
         return len(self.fit_results)

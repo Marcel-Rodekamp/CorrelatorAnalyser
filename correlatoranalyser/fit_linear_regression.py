@@ -126,10 +126,10 @@ def linear_regression(
         parameter_names = ("m", "b") if has_intercept else ("m",)
 
     expected_nparams = 2 if has_intercept else 1
-    if len(parameter_names) != expected_nparams:
+    if len(np.unique(parameter_names)) != expected_nparams:
         raise ValueError(
             f"Expected {expected_nparams} parameter name(s) for "
-            f"has_intercept={has_intercept}, got {len(parameter_names)}: {parameter_names}"
+            f"has_intercept={has_intercept}, got {len(np.unique(parameter_names))}: {parameter_names}"
         )
 
     Nres = ordinate.Nresample

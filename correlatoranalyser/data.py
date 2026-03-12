@@ -1182,12 +1182,12 @@ class Data:
 
     @property
     def mean(self) -> np.ndarray | Number:
+        if self.locked_mean:
+            return self._mean
+
         if self.resample_type is None:
             # Always derive from _gvar to stay consistent with propagated operations
             self._mean = gv.mean(self._gvar)
-            return self._mean
-
-        if self.locked_mean:
             return self._mean
 
         self._mean = np.mean(self._rspl, axis=0)
@@ -1195,10 +1195,6 @@ class Data:
 
     @mean.setter
     def mean(self, value: np.ndarray | Number) -> None:
-        if self.resample_type is None:
-            raise ValueError(
-                "Cannot set mean on gvar-mode Data; the mean is determined by the internal gvar objects.")
-
         if hasattr(self, "_mean"):
             if isinstance(self._mean, np.ndarray) and isinstance(value, np.ndarray):
                 if self._mean.shape != value.shape:
@@ -1219,10 +1215,15 @@ class Data:
                 if self._rspl.shape[1:] != value.shape:
                     raise ValueError("Setting mean with array requires matching shape with resamples")
                 self._mean = value
-            if isinstance(value, Number):
+            elif isinstance(value, Number):
                 if self._rspl.ndim != 1:
                     raise ValueError("Setting mean with array requires matching shape with resamples")
                 self._mean = value
+            else:
+                raise ValueError(f"Setting mean with value ({type(value)}) is prohibited")
+
+        if self.resample_type is None:
+            self._gvar = gv.gvar(self._mean, self.serr)
 
     @property
     def serr(self) -> np.ndarray | Number:
@@ -1441,7 +1442,8 @@ class Data:
         if self.resample_type is None:
             # gvar mode: use gv.dumps to preserve all correlations
             grp.create_dataset("mode", data="gvar")
-            grp.create_dataset("gvar_data", data=np.bytes_(gv.dumps(self._gvar)))
+            grp.create_dataset("mean", data=self._mean)
+            grp.create_dataset("gvar", data=np.bytes_(gv.dumps(self._gvar)))
         else:
             grp.create_dataset("mode", data="resample")
             grp.create_dataset("resample_type", data=self.resample_type)
@@ -1453,10 +1455,15 @@ class Data:
 
         if self.Ndata is not None:
             grp.create_dataset("Ndata", data=self.Ndata)
+        if self.blocksize is not None:
+            grp.create_dataset("blocksize", data=self.blocksize)
         if self.tag is not None:
             grp.create_dataset("tag", data=self.tag)
         if self.Nbst_inner != Data.Nbst_inner:
             grp.create_dataset("Nbst_inner", data=self.Nbst_inner)
+
+
+        grp.create_dataset("locked_mean", data = self.locked_mean)
 
     @staticmethod
     def deserialize(h5f: h5.Group, node: str | None = None) -> 'Data':
@@ -1466,21 +1473,27 @@ class Data:
             grp = h5f[node]
 
         new: Data = Data.__new__(Data)
-        new.blocksize = None
-        new.locked_mean = False
+
+        if "blocksize" in grp:
+            new.blocksize = grp["blocksize"][()]
+        else:
+            new.blocksize = None
+
+        new.locked_mean = grp["locked_mean"][()]
 
         # allow backwards compatibility:
         if "mode" in grp:
             mode = grp["mode"][()].decode('utf-8') if isinstance(grp["mode"][()], bytes) else grp["mode"][()]
         else:
-            mode = None
+            mode = "resample"
 
         if mode == "gvar":
             new.resample_type = None
             new._rspl = None
             new._rwf_rspl = None
             new.Nresample = None
-            gvar_bytes = grp["gvar_data"][()]
+            new._mean = grp["mean"][()]
+            gvar_bytes = grp["gvar"][()]
             new._gvar = gv.loads(bytes(gvar_bytes))
             new._mean = gv.mean(new._gvar)
         else:

@@ -5,6 +5,7 @@ import gvar as gv
 import lsqfit
 import multiprocess as mp
 from dill import dumps, loads
+import warnings
 
 from .data import Data
 from .prior import Prior
@@ -24,12 +25,11 @@ def _build_lsqfit_args(abscissa, ordinate_gvar, model, prior, p0, correlated, sv
 
     if prior is not None:
         args["prior"] = {
-            k: prior[k].gvar() if prior[k].dist == "normal" else gv.log(prior[k].gvar())
-            for k in prior
-        }
-        # lsqfit uses "log(key)" notation for log-normal priors
-        args["prior"] = {
-            (k if prior[k].dist == "normal" else f"log({k})"): prior[k].gvar()
+            (k if prior[k].dist == "normal" else f"log({k})"): (
+                prior[k].gvar()                          # normal  → gvar(mean, sdev)
+                if prior[k].dist == "normal"
+                else gv.gvar(prior[k].mean, prior[k].sdev)  # log-normal → plain gvar
+            )
             for k in prior
         }
     else:
@@ -153,6 +153,13 @@ def fit_lsqfit(
 
     _validate_inputs(abscissa, ordinate, model, prior, p0)
 
+    if Nproc is not None and (central_value_fit_correlated or resample_fit_correlated):
+        raise ValueError(
+            "Correlated fits are not supported with parallel execution (Nproc is not None) "
+            "in the lsqfit backend: gvar objects in the fit arguments cannot be safely "
+            "pickled across process boundaries. Either set Nproc=None or use uncorrelated fits."
+        )
+
     Nres       = ordinate.Nresample
     start_vals = _get_p0(prior, p0)
 
@@ -228,8 +235,17 @@ def fit_lsqfit(
             for sl in slices
         ]
 
-        with mp.Pool(processes=Nproc) as pool:
-            results = pool.starmap(_execute_fit_parallel, inputs)
+        with warnings.catch_warnings():
+            # we explicitly ignore correlations otherwise 
+            # an error would have been thrown earlier. 
+            # Thus we can ignore the warnings here
+            warnings.filterwarnings(
+                "ignore",
+                message="Pickling GVars.*loses correlations",
+                category=UserWarning,
+            )
+            with mp.Pool(processes=Nproc) as pool:
+                results = pool.starmap(_execute_fit_parallel, inputs)
 
         errors = []
         for result in results:

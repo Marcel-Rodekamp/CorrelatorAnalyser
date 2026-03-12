@@ -13,7 +13,7 @@ from .fit_helper import _validate_inputs, _get_p0, _get_abscissa, _compute_cov_i
 # Cost function constructors
 # =============================================================================
 
-def _build_correlated_cost(abscissa, y_data, cov_inv, model, param_names, priors=None):
+def _build_correlated_cost(abscissa, y_data, cov_inv, model, param_names, priors=None, model_has_grad=False):
     """Correlated (full covariance) chi-squared cost function for iminuit."""
 
     def cost(*args):
@@ -24,8 +24,30 @@ def _build_correlated_cost(abscissa, y_data, cov_inv, model, param_names, priors
             chi2 += sum(priors[k](params[k]) for k in priors if k in params)
         return chi2
 
+    def grad(*args):
+        params   = dict(zip(param_names, args))
+        delta    = y_data - model(abscissa, params)
+        # For chi² = delta^T C^{-1} delta, the gradient w.r.t. theta_k is
+        #   d(chi²)/d(theta_k) = -2 (C^{-1} delta)^T · d(model)/d(theta_k)
+        # C^{-1} delta is a plain matrix-vector product, unlike the uncorrelated
+        # case where C^{-1} is diagonal and reduces to element-wise scaling.
+        weighted = cov_inv @ delta          # shape (N,)  — the key difference
+        dchi2_df = -2.0 * weighted          # shape (N,)
+        J        = np.asarray(model.grad(abscissa, params) * dchi2_df)
+        if J.ndim > 1:
+            J = J.sum(axis=tuple(range(1, J.ndim)))
+        if priors:
+            for i, key in enumerate(param_names):
+                if key in priors:
+                    J[i] += priors[key].grad(params[key])
+        return J
+
     cost.errordef = iminuit.Minuit.LEAST_SQUARES
     cost.ndata    = len(abscissa)
+
+    if model_has_grad:
+        cost.grad = grad
+
     return cost
 
 
@@ -47,14 +69,16 @@ def _build_uncorrelated_cost(abscissa, y_data, sdev_inv, model, param_names, pri
         J       = np.asarray(model.grad(abscissa, params) * drsqdp)
         if J.ndim > 1:
             J = J.sum(axis=tuple(range(1, J.ndim)))
+        if priors:
+            for i, key in enumerate(param_names):
+                if key in priors:
+                    J[i] += priors[key].grad(params[key])
         return J
 
     cost.errordef = iminuit.Minuit.LEAST_SQUARES
     cost.ndata    = len(abscissa)
 
     if model_has_grad:
-        if priors:
-            raise NotImplementedError("Gradient-based fits with priors are not yet supported.")
         cost.grad = grad
 
     return cost
@@ -64,7 +88,7 @@ def _build_uncorrelated_cost(abscissa, y_data, sdev_inv, model, param_names, pri
 # Single-fit executor
 # =============================================================================
 
-def _run_minuit(least_square, p0, limits=None):
+def _run_minuit(least_square, p0, limits=None, maxiter=10_000):
     """Construct and minimise a single Minuit instance. Returns the Minuit object."""
     has_grad = hasattr(least_square, "grad")
 
@@ -82,7 +106,7 @@ def _run_minuit(least_square, p0, limits=None):
             if key in minuit.parameters:
                 minuit.limits[key] = limit
 
-    minuit.migrad()
+    minuit.migrad(ncall=maxiter)
     return minuit
 
 
@@ -109,6 +133,7 @@ def _execute_fits(fit_args, nres=None):
                 fit_args["least_square"],
                 fit_args["p0"],
                 fit_args.get("limits"),
+                fit_args.get("maxiter", 10_000)
             )
         except Exception as e:
             out["error"] = e
@@ -121,6 +146,7 @@ def _execute_fits(fit_args, nres=None):
                 fit_args[res_id]["least_square"],
                 fit_args[res_id]["p0"],
                 fit_args[res_id].get("limits"),
+                fit_args[res_id].get("maxiter", 10_000)
             )
         except Exception as e:
             out["error"][res_id] = e
@@ -254,13 +280,13 @@ def fit_iminuit(
         y_cv = ordinate.mean
 
         if central_value_fit_correlated:
-            least_square = _build_correlated_cost(x_cv, y_cv, cov_inv, model, param_names, prior)
+            least_square = _build_correlated_cost(x_cv, y_cv, cov_inv, model, param_names, prior, has_grad)
         else:
             least_square = _build_uncorrelated_cost(
                 x_cv, y_cv, 1.0 / ordinate.serr, model, param_names, prior, has_grad
             )
 
-        res = _execute_fits({"least_square": least_square, "p0": start_vals, "limits": limits})
+        res = _execute_fits({"least_square": least_square, "p0": start_vals, "limits": limits, "maxiter": maxiter})
         if res["error"] is not None:
             raise res["error"]
 
@@ -280,13 +306,13 @@ def fit_iminuit(
         y_rs = ordinate.rspl[nres]
 
         if resample_fit_correlated:
-            least_square = _build_correlated_cost(x_rs, y_rs, cov_inv, model, param_names, prior)
+            least_square = _build_correlated_cost(x_rs, y_rs, cov_inv, model, param_names, prior, has_grad)
         else:
             least_square = _build_uncorrelated_cost(
                 x_rs, y_rs, 1.0 / ordinate.serr, model, param_names, prior, has_grad
             )
 
-        args[nres] = {"least_square": least_square, "p0": start_vals, "limits": limits}
+        args[nres] = {"least_square": least_square, "p0": start_vals, "limits": limits, "maxiter":maxiter}
 
     # ------------------------------------------------------------------
     # Execute resample fits (serial or parallel)

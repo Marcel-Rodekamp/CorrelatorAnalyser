@@ -58,10 +58,25 @@ class Prior:
             return ((theta - self.mean) / self.sdev) ** 2
         else:
             if theta <= 0:
-                raise ValueError(
-                    f"log-normal prior requires theta > 0, got {theta}"
-                )
+                # Return a large finite penalty.
+                # np.inf is avoided because it can break finite-difference
+                # gradient estimates at the boundary.
+                return 1e30
             return ((np.log(theta) - self.mean) / self.sdev) ** 2
+
+    # ------------------------------------------------------------------
+    # Gradient/Jacobian
+    # ------------------------------------------------------------------
+
+    def grad(self, theta: float) -> float:
+        """Return d(chi²_prior)/d(theta) — the gradient of the prior contribution."""
+        if self.dist == "normal":
+            return 2.0 * (theta - self.mean) / self.sdev ** 2
+        else:
+            if theta <= 0:
+                # Consistent with __call__: d const / dx = 0
+                return 0
+            return 2.0 * (np.log(theta) - self.mean) / (self.sdev ** 2 * theta)
 
     # ------------------------------------------------------------------
     # gvar interoperability
