@@ -312,11 +312,7 @@ class FitResult:
     
         for key, p in self.params.items():
             prior_tag = f"  [{self.priors[key]}]" if key in self.priors else ""
-            hess_tag  = (
-                f"  (Hessian σ = {self.params_hessian_err[key].mean:.3g})"
-                if key in self.params_hessian_err else ""
-            )
-            lines.append(f"    {key}: {p.gvar()}{prior_tag}{hess_tag}")
+            lines.append(f"    {key}: {p.gvar()}{prior_tag}")
         return "\n".join(lines)
 
     # ------------------------------------------------------------------
