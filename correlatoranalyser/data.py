@@ -1479,7 +1479,10 @@ class Data:
         else:
             new.blocksize = None
 
-        new.locked_mean = grp["locked_mean"][()]
+        if "locked_mean" in grp:
+            new.locked_mean = grp["locked_mean"][()]
+        else:
+            new.locked_mean = False
 
         # allow backwards compatibility:
         if "mode" in grp:
