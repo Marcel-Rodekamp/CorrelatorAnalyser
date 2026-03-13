@@ -501,6 +501,25 @@ class FitResult:
     # Importers
     # ------------------------------------------------------------------
 
+    def import_from_adam(
+        self,
+        cost_history: list[float],
+        nres: int | None = None,
+    ):
+        if nres is None:
+            # central value fit
+
+            if not hasattr(self,"cost_history"):
+                self.cost_history = cost_history
+            else:
+                raise RuntimeError(f"FitResult {self}, already hast cost_history")
+        else:
+
+            if not hasattr(self,"cost_history_rspl"):
+                self.cost_history_rspl = [None] * self.Nresample 
+            self.cost_history_rspl[nres] = cost_history
+
+
     def import_from_iminuit(
         self,
         minuit: Any,
