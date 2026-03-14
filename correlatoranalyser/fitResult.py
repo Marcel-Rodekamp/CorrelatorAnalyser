@@ -13,6 +13,8 @@ from scipy.special import gammaincc
 from .data import Data
 from .prior import Prior
 
+from .fit_helper import _jacobian_fd
+
 
 # =============================================================================
 # Model serialisation helpers
@@ -179,12 +181,14 @@ class FitResult:
         self.chi2:    Data | float | None = None
         self.p_value: Data | float | None = None
         self.AIC:     Data | float | None = None
+        self.expected_chi2:Data | float | None = None
 
         # Initialise Data containers when resample fits are requested.
         if self.has_resamples:
             self.chi2    = Data.empty(resample_type=resample_type, shape=None, Nresample=Nresample, locked_mean=True)
             self.p_value = Data.empty(resample_type=resample_type, shape=None, Nresample=Nresample, locked_mean=True)
             self.AIC     = Data.empty(resample_type=resample_type, shape=None, Nresample=Nresample, locked_mean=True)
+            self.expected_chi2 = Data.empty(resample_type=resample_type, shape=None, Nresample=Nresample, locked_mean=True)
 
         # Raw backend objects (not serialised).
         self.fit_output: Any = None                          # central value
@@ -283,6 +287,48 @@ class FitResult:
             aic += (2.0 * k**2 + 2.0 * k) / denominator
 
         return aic
+    
+    # ------------------------------------------------------------------
+    # Expected chi2
+    # ------------------------------------------------------------------
+    def compute_expected_chi2(
+        self,
+        cov: np.ndarray,
+        W: np.ndarray,
+        J: np.ndarray,
+        Npriors: int = 0,
+    ) -> float:
+        r"""
+        Compute the expected chi-squared for a fit with weight matrix W
+        on data with covariance C.
+
+        .. math::
+            \langle \chi^2 \rangle = \mathrm{Tr}[W (I - H) C] + N_\mathrm{priors}
+
+        where the hat matrix
+
+        .. math::
+            H = J^T (J W J^T)^{-1} J W
+
+        projects residuals onto the model sensitivity subspace.
+        J[i, j] = d model_j / d theta_i  (shape: Nparams × Nx).
+
+        Reduces to dof = Nx - Nparams when W = C^{-1}.
+
+        This is inspired by 
+            M. Bruno and R. Sommer, 
+            On fits to correlated and auto-correlated data 
+            arXiv:2209.14188
+        The form is the same as equation 2.13 but the weight matrix follows 
+        the square (cov^-1 -> dof, 1/σ²)
+        If cov is exact, this has an error of order 1/N. 
+        If cov is estimated with error (1/sqrt(N)), this error is inhereted here.
+        """
+        Nx = cov.shape[0]
+        M  = J @ W @ J.T                          # (Nparams, Nparams)
+        H  = J.T @ np.linalg.solve(M, J @ W)     # (Nx, Nx)
+        expected = np.trace(W @ (np.eye(Nx) - H) @ cov) + Npriors
+        return float(expected)
 
     # ------------------------------------------------------------------
     # Representation
@@ -298,14 +344,16 @@ class FitResult:
         if self.has_resamples:
             lines = [
                 f"FitResult[{abscissa_range}, Ndata={self.Ndata}, resample:{resample_tag}]:",
-                f"  χ²/dof [dof] = {self.chi2.mean / self.dof:.3g} [{self.dof}]",
-                f"  p-value      = {self.p_value.mean:.3g}",
-                f"  AIC          = {self.AIC.mean:.3g}",
+                f"  χ²/dof [dof]   = {self.chi2.mean / self.dof:.3g} [{self.dof}]",
+                f"  χ²/<χ²> [<χ²>] = {self.chi2.mean / self.expected_chi2.mean:.3g} [{self.expected_chi2.mean:.3g}]",
+                f"  p-value        = {self.p_value.mean:.3g}",
+                f"  AIC            = {self.AIC.mean:.3g}",
             ]
         else:
             lines = [
                 f"FitResult[{abscissa_range}, Ndata={self.Ndata}, resample:{resample_tag}]:",
                 f"  χ²/dof [dof] = {self.chi2 / self.dof:.3g} [{self.dof}]",
+                f"  χ²/<χ²> [<χ²>] = {self.chi2 / self.expected_chi2:.3g} [{self.expected_chi2:.3g}]",
                 f"  p-value      = {self.p_value:.3g}",
                 f"  AIC          = {self.AIC:.3g}",
             ]
@@ -472,25 +520,39 @@ class FitResult:
             self.params_hessian_err[key] = _make_param_data(self.resample_type, self.Nresample)
 
     def _store_fit_quality(
-        self, chi2: float, nres: int | None
+        self, chi2: float, expected_chi2: float | None, nres: int | None
     ) -> None:
-        """Write chi2, p-value, and AIC for a central-value or resample fit."""
+        """Write chi2, expected chi2 (defaults to dof), p-value, and AIC for a central-value or resample fit."""
         p_val = float(gammaincc(self.dof / 2.0, chi2 / 2.0))
         aic   = self._compute_AIC(chi2)
+        # expected_chi2 = self._compute_expected_chi2()
 
         if nres is None:
             if self.has_resamples:
                 self.chi2.mean    = chi2
                 self.p_value.mean = p_val
                 self.AIC.mean     = aic
+                if expected_chi2 is not None:
+                    self.expected_chi2.mean = expected_chi2
+                else:
+                    self.expected_chi2.mean = self.dof
+
             else:
                 self.chi2         = chi2
                 self.p_value      = p_val
                 self.AIC          = aic               
+                if expected_chi2 is not None:
+                    self.expected_chi2 = expected_chi2
+                else:
+                    self.expected_chi2 = self.dof
         else:
             self.chi2.rspl[nres]    = chi2
             self.p_value.rspl[nres] = p_val
             self.AIC.rspl[nres]     = aic
+            if expected_chi2 is not None:
+                self.expected_chi2.rspl[nres] = expected_chi2
+            else:
+                self.expected_chi2.rspl[nres] = self.dof
 
     def _init_resample_store(self) -> None:
         """Lazily create the per-resample raw-output list."""
@@ -519,12 +581,13 @@ class FitResult:
                 self.cost_history_rspl = [None] * self.Nresample 
             self.cost_history_rspl[nres] = cost_history
 
-
     def import_from_iminuit(
         self,
         minuit: Any,
         Ndata: int,
         model: Callable,
+        cov: np.ndarray | None = None,
+        W: np.ndarray | None = None,
         variable_projection: dict[str, float] | None = None,
         prior: dict[str, Prior] | None = None,
         nres: int | None = None,
@@ -540,6 +603,10 @@ class FitResult:
             Number of fit data points used for χ² and AIC.
         model : callable
             The model function (stored on the first call).
+        cov: np.ndarray 
+            The data covariance. This is used to compute the expected chi²
+        W: np.ndarray
+            The weight matrix of the chi² definition. This is used to compute the expected chi². 
         variable_projection : dict[str, float] | None
             Linear-parameter values from variable-projection fits.
         prior : dict[str, Prior] | None
@@ -593,8 +660,22 @@ class FitResult:
             for key, p in prior.items():
                 self.priors[key] = p
 
+        if cov is not None and W is not None:
+            cv = {
+                k: self.params[k].mean if nres is None else self.params[k].rspl[nres]
+                  for k in self.params
+            }
+
+            J  = (model.grad(self.abscissa, cv) if hasattr(model, "grad") else _jacobian_fd(model, self.abscissa, cv))
+
+            exp_chi2 = self.compute_expected_chi2(
+                cov, W, J, Npriors=len(prior) if prior else 0
+            )
+        else: 
+            exp_chi2 = self.dof
+
         # --- fit quality ---
-        self._store_fit_quality(minuit.fval, nres)
+        self._store_fit_quality(minuit.fval, exp_chi2, nres)
 
         # --- raw backend object (not serialised) ---
         if nres is None:
@@ -607,6 +688,8 @@ class FitResult:
     def import_from_lsqfit(
         self,
         nlf: Any,
+        cov: np.ndarray | None = None,
+        W: np.ndarray | None = None,
         nres: int | None = None,
     ) -> None:
         """
@@ -624,6 +707,10 @@ class FitResult:
         ----------
         nlf : lsqfit.nonlinear_fit
             Completed lsqfit fit object.
+        cov: np.ndarray 
+            The data covariance. This is used to compute the expected chi²
+        W: np.ndarray
+            The weight matrix of the chi² definition. This is used to compute the expected chi². 
         nres : int | None
             Resample index.  ``None`` → central-value fit.
         """
@@ -659,10 +746,24 @@ class FitResult:
             for key, prior in imported.items():
                 self.priors[key] = prior
 
+        if cov is not None and W is not None:
+            cv = {
+                k: self.params[k].mean if nres is None else self.params[k].rspl[nres]
+                  for k in self.params
+            }
+
+            J  = (nlf.fcn.grad(self.abscissa, cv) if hasattr(nlf.fcn, "grad") else _jacobian_fd(nlf.fcn, self.abscissa, cv))
+
+            exp_chi2 = self.compute_expected_chi2(
+                cov, W, J, Npriors=len(self.priors) if self.priors else 0
+            )
+        else: 
+            exp_chi2 = self.dof
+
         # --- fit quality ---
         # lsqfit stores p-value in nlf.Q; we re-compute from chi2 for
         # consistency with the other backends.
-        self._store_fit_quality(float(nlf.chi2), nres)
+        self._store_fit_quality(float(nlf.chi2), exp_chi2, nres)
 
         # --- raw backend object (not serialised) ---
         if nres is None:
@@ -679,6 +780,7 @@ class FitResult:
         design_matrix: np.ndarray,
         weight_matrix: np.ndarray,
         parameter_names: tuple[str, ...],
+        cov: np.ndarray,
         nres: int | None = None,
     ) -> None:
         """
@@ -700,6 +802,8 @@ class FitResult:
             Weight matrix W = C^{-1}.
         parameter_names : tuple[str, ...]
             Names of the fit parameters.
+        cov: np.ndarray 
+            The data covariance. This is used to compute the expected chi²
         nres : int | None
             Resample index.  ``None`` → central-value fit.
         """
@@ -739,4 +843,12 @@ class FitResult:
         # chi2 = r^T W r
         residuals = target_data - design_matrix @ result_params
         chi2      = float(residuals.T @ weight_matrix @ residuals)
-        self._store_fit_quality(chi2, nres)
+
+        exp_chi2 = self.compute_expected_chi2(
+            cov=cov,      # pass this in as a new argument
+            W=weight_matrix,
+            J=design_matrix.T,     # shape (Nparams, Nx) — already available
+            Npriors=0,
+        )
+
+        self._store_fit_quality(chi2, exp_chi2, nres)

@@ -63,3 +63,23 @@ def _compute_cov_inv(ordinate, svdcut=None):
     cov_inv  = (eigvecs * np.where(keep, 1.0 / np.where(keep, eigvals, 1.0), 0.0)) @ eigvecs.T
     return cov_inv, LT
 
+
+def _jacobian_fd(model, abscissa, params: dict, rel_step: float = 1e-5) -> np.ndarray:
+    """
+    Central finite-difference Jacobian of model(abscissa, params).
+
+    Returns
+    -------
+    J : np.ndarray, shape (Nparams, Nx)
+        J[i, j] = dmodel_j / dtheta_i
+    """
+    keys   = list(params.keys())
+    f0     = np.asarray(model(abscissa, params), dtype=float)
+    J      = np.empty((len(keys), f0.size), dtype=float)
+    for i, key in enumerate(keys):
+        h               = rel_step * max(abs(params[key]), 1.0)
+        p_fwd           = dict(params); p_fwd[key] += h
+        p_bwd           = dict(params); p_bwd[key] -= h
+        J[i]            = (np.asarray(model(abscissa, p_fwd), dtype=float)
+                         - np.asarray(model(abscissa, p_bwd), dtype=float)) / (2.0 * h)
+    return J

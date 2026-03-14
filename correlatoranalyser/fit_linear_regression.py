@@ -159,6 +159,7 @@ def linear_regression(
             design_matrix   = X_cv,
             weight_matrix   = W_cv,
             parameter_names = parameter_names,
+            cov             = ordinate.cov,
             nres            = None,
         )
 
@@ -195,6 +196,7 @@ def linear_regression(
             design_matrix   = X_rs,
             weight_matrix   = W_rs,
             parameter_names = parameter_names,
+            cov             = ordinate.cov,
             nres            = nres,
         )
 

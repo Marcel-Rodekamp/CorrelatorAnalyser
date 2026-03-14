@@ -10,7 +10,7 @@ import warnings
 from .data import Data
 from .prior import Prior
 from .fitResult import FitResult
-from .fit_helper import _validate_inputs, _get_p0, _get_abscissa
+from .fit_helper import _validate_inputs, _get_p0, _get_abscissa, _compute_cov_inv
 
 # =============================================================================
 # lsqfit argument builder
@@ -178,6 +178,10 @@ def fit_lsqfit(
     if central_value_fit:
         x_cv          = _get_abscissa(abscissa)
         ordinate_gvar = ordinate.gvar(correlated=central_value_fit_correlated)
+        if central_value_fit_correlated:
+            W, _ = _compute_cov_inv(ordinate, svdcut=svdcut)
+        else:
+            W = np.diag(1/ordinate.serr**2)
 
         fit_args = _build_lsqfit_args(
             x_cv, ordinate_gvar, model, prior, start_vals,
@@ -188,7 +192,7 @@ def fit_lsqfit(
         if res["error"] is not None:
             raise res["error"]
 
-        fit_result.import_from_lsqfit(nlf=res["nlf"])
+        fit_result.import_from_lsqfit(nlf=res["nlf"], cov=ordinate.cov, W = W)
 
     if not resample_fit:
         return fit_result
@@ -204,6 +208,10 @@ def fit_lsqfit(
             ordinate.rspl[nres],
             ordinate.cov if resample_fit_correlated else ordinate.serr,
         )
+        if central_value_fit_correlated:
+            W, _ = _compute_cov_inv(ordinate, svdcut=svdcut)
+        else:
+            W = np.diag(1/ordinate.serr**2)
 
         args[nres] = _build_lsqfit_args(
             x_rs, ordinate_gvar, model, prior, start_vals,
@@ -220,7 +228,7 @@ def fit_lsqfit(
             n, err = errors[0]
             raise RuntimeError(f"Resample fit failed at nres={n}: {err}") from err
         for nres in range(Nres):
-            fit_result.import_from_lsqfit(out["nlf"][nres], nres=nres)
+            fit_result.import_from_lsqfit(out["nlf"][nres], cov=ordinate.cov, W = W, nres=nres)
 
     else:
         blockSize = Nres // Nproc
@@ -255,7 +263,7 @@ def fit_lsqfit(
                     continue
                 try:
                     nlf = loads(result["nlf"][res_id])
-                    fit_result.import_from_lsqfit(nlf=nlf, nres=nres)
+                    fit_result.import_from_lsqfit(nlf=nlf, cov=ordinate.cov, W = W, nres=nres)
                 except Exception as e:
                     errors.append((nres, f"import_from_lsqfit failed: {e}"))
 

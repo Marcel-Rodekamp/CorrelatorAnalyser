@@ -289,18 +289,25 @@ def fit_iminuit(
         y_cv = ordinate.mean
 
         if central_value_fit_correlated:
-            least_square = _build_correlated_cost(x_cv, y_cv, cov_inv, model, param_names, prior, has_grad)
+            W = cov_inv
+            least_square = _build_correlated_cost(x_cv, y_cv, W, model, param_names, prior, has_grad)
         else:
             least_square = _build_uncorrelated_cost(
                 x_cv, y_cv, 1.0 / ordinate.serr, model, param_names, prior, has_grad
             )
+            W = np.diag(1.0 / ordinate.serr**2)
 
         res = _execute_fits({"least_square": least_square, "p0": start_vals, "limits": limits, "maxiter": maxiter})
         if res["error"] is not None:
             raise res["error"]
 
         fit_result.import_from_iminuit(
-            minuit=res["minuit"], model=model, prior=prior, Ndata=int(np.prod(ordinate.shape))
+            minuit= res["minuit"], 
+            model = model, 
+            cov   = ordinate.cov,
+            W     = W,
+            prior = prior, 
+            Ndata = int(np.prod(ordinate.shape))
         )
 
     if not resample_fit:
@@ -310,6 +317,11 @@ def fit_iminuit(
     # Build per-resample fit arguments
     # ------------------------------------------------------------------
     args = np.empty(Nres, dtype=object)
+    if resample_fit_correlated:
+        W = cov_inv
+    else:
+        W = np.diag(1/ordinate.serr**2)
+
     for nres in range(Nres):
         x_rs = _get_abscissa(abscissa, nres)
         y_rs = ordinate.rspl[nres]
@@ -334,7 +346,11 @@ def fit_iminuit(
             raise RuntimeError(f"Resample fit failed at nres={nres}: {err}") from err
         for nres in range(Nres):
             fit_result.import_from_iminuit(
-                out["minuit"][nres], model=model, prior=prior,
+                out["minuit"][nres], 
+                model=model, 
+                prior=prior,
+                cov = ordinate.cov,
+                W = W,
                 Ndata=int(np.prod(ordinate.shape)), nres=nres
             )
     else:

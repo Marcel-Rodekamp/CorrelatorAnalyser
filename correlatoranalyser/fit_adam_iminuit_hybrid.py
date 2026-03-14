@@ -521,7 +521,10 @@ def fit_adam_iminuit_hybrid(
         x_cv = _get_abscissa(abscissa)
         y_cv = ordinate.mean
         cost = _build_cost(x_cv, y_cv, central_value_fit_correlated)
-
+        if central_value_fit_correlated:
+            W = cov_inv
+        else:
+            W = np.diag(1/ordinate.serr**2)
         fit_args_cv = {
             "least_square": cost,
             "p0":           start_vals,
@@ -540,6 +543,8 @@ def fit_adam_iminuit_hybrid(
                 model               = model,
                 variable_projection = res["varproj"],
                 prior               = prior,
+                cov = ordinate.cov,
+                W = W,
                 Ndata               = Ndata,
             )
         else:
@@ -547,6 +552,8 @@ def fit_adam_iminuit_hybrid(
                 minuit = res["minuit"],
                 model  = model,
                 prior  = prior,
+                cov = ordinate.cov,
+                W = W,
                 Ndata  = Ndata,
             )
 
@@ -561,6 +568,10 @@ def fit_adam_iminuit_hybrid(
     # Build per-resample fit arguments
     # ------------------------------------------------------------------
     args = np.empty(Nres, dtype=object)
+    if resample_fit_correlated:
+        W = cov_inv
+    else:
+        W = np.diag(1/ordinate.serr**2)
     for nres in range(Nres):
         x_rs = _get_abscissa(abscissa, nres)
         y_rs = ordinate.rspl[nres]
@@ -596,6 +607,8 @@ def fit_adam_iminuit_hybrid(
                     variable_projection = out["varproj"][nres],
                     prior               = prior,
                     Ndata               = Ndata,
+                    cov                 = ordinate.cov,
+                    W                   = W,
                     nres                = nres,
                 )
         else:
@@ -612,6 +625,8 @@ def fit_adam_iminuit_hybrid(
                     model  = model,
                     prior  = prior,
                     Ndata  = Ndata,
+                    cov    = ordinate.cov,
+                    W      = W,
                     nres   = nres,
                 )
 
@@ -635,6 +650,8 @@ def fit_adam_iminuit_hybrid(
                     model               = model,
                     variable_projection = varproj,
                     prior               = prior,
+                    cov    = ordinate.cov,
+                    W      = W,
                     Ndata               = Ndata,
                     nres                = nres,
                 )
@@ -650,6 +667,8 @@ def fit_adam_iminuit_hybrid(
                     minuit,
                     model  = model,
                     prior  = prior,
+                    cov    = ordinate.cov,
+                    W      = W,
                     Ndata  = Ndata,
                     nres   = nres,
                 )

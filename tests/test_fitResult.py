@@ -79,6 +79,7 @@ def _minimal_cv_result(abscissa=None) -> FitResult:
     fr.params_hessian_err["m"] = _make_param_data(0.04)
     fr.params_hessian_err["b"] = _make_param_data(0.12)
     fr.chi2    = 3.2
+    fr.expected_chi2 = 6
     fr.p_value = 0.78
     fr.AIC     = -7.1
 
@@ -117,6 +118,7 @@ def _minimal_resample_result(nbst=NBST) -> FitResult:
 
     fr.chi2    = _make_quality_data(3.2, chi2_rspl, nbst)
     fr.p_value = _make_quality_data(0.78, pval_rspl, nbst)
+    fr.expected_chi2 = _make_quality_data(NDATA-2, np.full_like(chi2_rspl, NDATA-2), nbst)
     fr.AIC     = _make_quality_data(-7.1, aic_rspl, nbst)
 
     def model_single_exp(t, p):
