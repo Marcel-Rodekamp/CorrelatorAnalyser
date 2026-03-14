@@ -1,228 +1,147 @@
-# Correlator Analyser
+# correlatoranalyser
 
-This repository contains a set of convenience functions to perform analysis of (Lattice QCD) correlator data. 
+A Python library for statistical analysis of Lattice QCD correlator data. It provides a unified fitting interface over multiple backends and first-class support for resampling-based error estimation (bootstrap and jackknife).
 
+---
 
-## Features
-### Fit results
+## Installation
 
-The heart of the library is the `FitResult` class that computes/collects various fit statistics such as 
-- $\chi^2$ `chi2`
-- AIC  `AIC` (with and without small sample correction)
-- p-value `Q_value`
-and allows for resample (bootstrap/jackknife) fits to be added.
+Requires Python ≥ 3.10. Install via [Poetry](https://python-poetry.org/):
 
-Further, a collection of `FitResult` is implemented via the class `FitState`. It conveniently collects the results and allows for AIC model averages over all added `FitResults`.
-
-### Interfaces
-
-We created a simple (primary) interface function 
-```python
-fit(
-    *,
-    abscissa: np.ndarray,
-    ordinate_est: np.ndarray | None = None,
-    ordinate_std: np.ndarray | None = None,
-    ordinate_cov: np.ndarray | None = None,
-    resample_ordinate_est: np.ndarray | None = None,
-    resample_ordinate_std: np.ndarray | None = None,
-    resample_ordinate_cov: np.ndarray | None = None,
-    # fit strategy, default: only uncorrelated central value fit:
-    central_value_fit: bool = True,
-    central_value_fit_correlated: bool = False,
-    resample_fit: bool = False,
-    resample_fit_correlated: bool = False,
-    resample_fit_resample_prior: bool = True,
-    resample_type: str | None = None,
-    # args for lsqfit:
-    model: Callable | None = None,
-    prior: dict | None = None,
-    p0: dict | None = None,
-    svdcut: float | None = None,
-    maxiter: int = 10_000,
-)
+```bash
+git clone https://github.com/your-org/correlatoranalyser.git
+cd correlatoranalyser
+poetry install
 ```
-which serves as a "single line" call to execute non-linear fits over central values and resamples.
 
-A simple example to execute a correlated, single exponential, fit over bootstraps can look as simple as
+---
+
+## Quick start
+
 ```python
 import numpy as np
-import correlatoranalyser as ca
-import gvar as gv # since lsqfit works on gvar, it is usful to continue to work with it
+from correlatoranalyser import Data
+from correlatoranalyser.fit import fit
 
-t = np.arange(t_start,t_end)
-C2pt_bst = np.zeros( (N_bst,T), dtype = float )
-C2pt_est = np.zeros( (T,) )
-C2pt_cov = np.zeros( (T,T) )
+# 1. Wrap raw gauge configurations in a bootstrap ensemble
+ordinate = Data(resample_type="bst", data=raw, Nresample=NBST)
 
-# Read bootstraps (and associate standard deviations per bootstrap), as well as central values from file into C2pt_* 
-# or construct it o nthe fly
+# 2. Define a model (must be a named, module-level function)
+def model_2exp(t, p):
+    return p["A0"] * np.exp(-p["E0"] * t) + p["A1"] * np.exp(-p["E1"] * t)
 
-fitResult = fit(
-    # Data to fit against
-    # provide the axis the model depends on, here euclidean time in lattice units
-    abscissa = t,
-    # provide the central value data to fit against
-    ordinate_est = C2pt_est,
-    # provide the covariance between the data points
-    ordinate_cov = C2pt_cov,
-    # provide the bootstrap data to fit against
-    resample_ordinate_est = C2pt_bst,
-    # provide the covariance between the data points
-    # we do not need to use a frozen covariance for all bootstraps, but usually this is much more stable
-    resample_ordinate_cov = C2pt_cov, 
-    
-    # fit strategy
-    # do a fit to the central values themself
-    central_value_fit = True,
-    # and do it using the provided covariance
+# 3. Fit
+fit_result = fit(
+    backend                      = "lsqfit",
+    abscissa                     = t,
+    ordinate                     = ordinate,
+    model                        = model_2exp,
+    # prior                      = prior,   # optional: supply priors instead of p0
+    p0                           = p0,
+    central_value_fit            = True,
     central_value_fit_correlated = True,
-    # perform a fit to the resamples (e.g. bootstraps)
-    resample_fit = True,
-    # and do it using the provided covariance
-    resample_fit_correlated = True,
-    # if priors are used, one may want to resample a prior for each bootstrap to reduce bias
-    # here we don't use priors, so we don't need it
-    resample_fit_resample_prior = False,
-    # this can be 'bst' for bootstrap, 'jkn' for jackknife, None if only central value fits are desired.
-    resample_type = 'bst',
-    
-    # Model definition and staring values/priors
-    # model definition
-    model = lambda t,p: p["A0"]*np.exp(-t*p["E0"])  ,
-    # provide some start values
-    p0 = {
-        "A0": 1e-11,
-        "E0": 0.3
-    },
-    # if priors are desired use the following dictionary instead:
-    # prior = {
-    #     "A0": gv.gvar(A0_prior_mean, A0_prior_sdev), # gaussian prior
-    #     "E0": gv.gvar(E0_prior_mean, E0_prior_sdev), # gaussian prior
-    # }
+    resample_fit                 = True,
+    resample_fit_correlated      = True,
 )
 
-print(fitResult)
-
-```
-
-Alternatively, one can execute the fit using `lsqfit` (other backends are planned in the future) explicitly and then import it into the fit result.
-
-```python
-import numpy as np
-import correlatoranalyser as ca
-import gvar as gv # since lsqfit works on gvar, it is usful to continue to work with it
-
-t = np.arange(t_start,t_end)
-C2pt_est = np.zeros( (T,) )
-C2pt_cov = np.zeros( (T,T) )
-
-# Read bootstraps (and associate standard deviations per bootstrap), as well as central values from file into C2pt_* 
-# or construct it on the fly
-
-C2pt_gvar = gv.gvar( C2pt_est, C2pt_cov )
-
-
-# initialize fit result
-fit_result = FitResult(
-    # start point of the fit interval
-    ts=t[0], 
-    # end point of the fit interval
-    te=t[-1],
-    # number of data points
-    Ndata=len(t),
-    # abscissa used in the fit
-    abscissa=t,
-    # number of resamples
-)
-
-# execute lsqfit; on the central values only here:
-nlf = lsqfit.nonlinear_fit(
-    data = (t,C2pt_gvar),
-    fcn = lambda t,p: p["A0"]*np.exp(-t*p["E0"])  ,
-    # provide some start values
-    p0 = {
-        "A0": 1e-11,
-        "E0": 0.3
-    },
-) 
-
-fit_result.import_from_lsqfit(nlf=nlf)
-
+# 4. Inspect the result
 print(fit_result)
-
 ```
 
-
-An explicit implementation for linear regression including correlated data points is implemented via the `linear_regression` method
-```python
-linear_regression(     
-    *,
-    abscissa: np.ndarray,
-    ordinate_est: np.ndarray | None = None,
-    ordinate_std: np.ndarray | None = None,
-    ordinate_cov: np.ndarray | None = None,
-    resample_ordinate_est: np.ndarray | None = None,
-    resample_ordinate_std: np.ndarray | None = None,
-    resample_ordinate_cov: np.ndarray | None = None,
-    # fit strategy, default: only uncorrelated central value fit:
-    central_value_fit: bool = True,
-    central_value_fit_correlated: bool = False,
-    resample_fit: bool = False,
-    resample_fit_correlated: bool = False,
-    resample_type: str | None = None,
-    has_intercept: bool = True,
-    parameter_names: tuple | None = None 
-)
+```
+FitResult[(1.0, 24.0), Ndata=24, resample:bst]:
+  χ²/dof [dof] = 0.966 [20]
+  p-value      = 0.501
+  AIC          = -18.6
+    A0:  1.514(15)
+    E0:  0.3017(15)
+    A1:  0.739(13)
+    dE1: 0.512(11)
 ```
 
-Here an example would be quite similar to the fit call above except of the slightly changed arguments.
-
-### Serialisation
-
-Serialisation of `FitResult` (and `FitState`) is implemented via h5py, with fit model being pickled using dill.
-
-You can simply call
+Parameter values and uncertainties are available as `Data` objects:
 
 ```python
-import h5py as h5 
-
-with h5.File(filename, 'a') as h5f: 
-    fitResult.serialize(h5f, node='fit') # node is optional but may be used to destinguish different fits.
+fit_result.params["E0"].mean   # central-value best fit
+fit_result.params["E0"].serr   # bootstrap standard error
+fit_result.params["E0"].rspl   # full array of per-resample values, shape (NBST,)
 ```
 
-## Installation 
+---
 
-The code is setup using the `pyproject`. Thus we can simply clone
+## Backends
 
-```sh 
-git clone https://github.com/Marcel-Rodekamp/CorrelatorAnalyser.git && cd CorrelatorAnalyser
+All backends are accessed through the single `fit(backend=..., ...)` entry point.
+
+| `backend` string | Algorithm | Best for |
+|---|---|---|
+| `"lsqfit"` | Levenberg–Marquardt via [lsqfit](https://github.com/gplepage/lsqfit) (P. Lepage) | Production fits; Gaussian and log-normal priors; |
+| `"iminuit"` | MIGRAD via [iminuit](https://github.com/scikit-hep/iminuit) | General nonlinear fits; analytic gradient support |
+| `"iminuit"` + `linear_params` | MIGRAD with variable projection (Golub–Pereyra) | Models with mixed linear/nonlinear parameters; reduces to nonlinear search space |
+| `"linear regression"` | Closed-form weighted least squares | Strictly linear models; no iterative minimiser |
+| `"hybrid:adam+iminuit"` | ADAM pre-optimisation → MIGRAD warm start | Highly non-convex or flat χ² landscapes (e.g. multi-exponential fits) where MIGRAD struggles from a cold start; also supports variable projection |
+
+### Priors
+
+Gaussian and log-normal priors are supported by the `lsqfit` and `iminuit` backends:
+
+```python
+from correlatoranalyser.prior import Prior
+
+prior = {
+    "A0": Prior(1.5,           2.0, dist="normal"),
+    "E0": Prior(np.log(0.3),   0.5, dist="log-normal"),  # keeps E0 > 0
+}
 ```
 
-and install via pip
+---
 
-```sh
-pip install .
+## Resampling
+
+`Data` objects represent/perform resampleing ensemble. Two resampling schemes are supported.
+
+```python
+# Bootstrap
+data = Data(resample_type="bst", data=raw, Nresample=500)
+
+# Jackknife (leave-one-out; Nresample is inferred automatically)
+data = Data(resample_type="jkn", data=raw)
 ```
 
-## Dependencies 
+Arithmetic operations between `Data` objects propagate the resample structure automatically, so derived quantities carry correct statistical uncertainties without any extra bookkeeping.
 
-We heavily utilities
+---
 
-- `numpy` [pip](https://pypi.org/project/numpy/)
-- `gvar` [pip](https://pypi.org/project/gvar/)
-- `lsqfit` [pip](https://pypi.org/project/lsqfit/)
-- `scipy` [pip](https://pypi.org/project/scipy/)
-- `dill` [pip](https://pypi.org/project/dill/)
+## Examples
 
-## List of contributions
+Ready-to-run scripts are provided in `examples/`:
 
-This interface was used in the following publications:
+| File | Backend | Model |
+|---|---|---|
+| `example_lsqfit_2exp.py` | lsqfit | Two-exponential correlator |
+| `example_iminuit_2exp.py` | iminuit | Two-exponential correlator |
+| `example_iminuit_variable_projection_2exp.py` | iminuit + varproj | Two-exponential correlator |
+| `example_hybrid_2exp.py` | hybrid ADAM+iminuit | Two-exponential correlator |
+| `example_hybrid_variable_projection_2exp.py` | hybrid ADAM+iminuit + varproj | Two-exponential correlator |
+| `example_linear_regression.py` | linear regression | Linear model |
 
-- P. Sinilkov et.al., Search for Stable States in Two-Body Excitations of the Hubbard Model on the Honeycomb Lattice [doi@PoS](https://doi.org/10.22323/1.466.0075), [arXiv:2502.04015](https://arxiv.org/abs/2502.04015)
-- M. Rodekamp et. al.,Single-particle spectrum of doped $C_{20}H_{12}$-perylene [doi@EPJ B](https://doi.org/10.1140/epjb/s10051-024-00859-1), [arXiv:2406.06711](https://arxiv.org/abs/2406.06711)
+---
 
+## Running the tests
+
+```bash
+poetry run pytest
+```
+
+---
+
+## Authors
+
+- Lea Kutsch — [l.kutsch@fz-juelich.de](mailto:l.kutsch@fz-juelich.de)
+- Giovanni Pederiva — [g.pederiva@fz-juelich.de](mailto:g.pederiva@fz-juelich.de)
+- Marcel Rodekamp — [marcel.rodekamp@ur.de](mailto:marcel.rodekamp@ur.de)
+- Emilio Taggi — [e.taggi@fz-juelich.de](mailto:e.taggi@fz-juelich.de)
 
 ## Thanks
 
-Special thanks go out to my collaborators  [Lea Kutsch](https://github.com/Lea-Antonia), [Giovanni Pederiva](https://github.com/GioPede), and [Emilio Taggi](https://github.com/Tag-E) who have put a lot of work into this and are actively using it.
+Special thanks goes out to my collaborators  [Lea Kutsch](https://github.com/Lea-Antonia), [Giovanni Pederiva](https://github.com/GioPede), and [Emilio Taggi](https://github.com/Tag-E) who have put a lot of work into this.
