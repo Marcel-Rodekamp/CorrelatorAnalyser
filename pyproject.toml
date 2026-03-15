@@ -11,19 +11,27 @@ authors = [
 readme = "README.md"
 
 [tool.poetry.dependencies]
-python = "^3.10"
-numpy = "^2.1.1"
-gvar = "^13.1.1"
-lsqfit = "^13.2.3"
+python     = "^3.10"
+numpy      = "^2.1.1"
+scipy      = "^1.14.0"
+gvar       = "^13.1.1"
+lsqfit     = "^13.2.3"
+iminuit    = "^2.30.0"
+multiprocess = "^0.70.16"
+dill       = "^0.3.8"
+h5py       = "^3.11.0"
 matplotlib = "^3.9.2"
-pytest = "^8.3.2"
-tqdm = "^4.66.5"
-h5py = "^3.11.0"
-pre-commit = "^3.8.0"
-black = "^24.8.0"
+tqdm       = "^4.66.5"
 typing-extensions = "^4.12.2"
 
+[tool.poetry.group.dev.dependencies]
+pytest     = "^8.3.2"
+pre-commit = "^3.8.0"
+black      = "^24.8.0"
+
+[tool.pytest.ini_options]
+testpaths = ["tests"]
 
 [build-system]
-requires = ["poetry-core"]
+requires      = ["poetry-core"]
 build-backend = "poetry.core.masonry.api"

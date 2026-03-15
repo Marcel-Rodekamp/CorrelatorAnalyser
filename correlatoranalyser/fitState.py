@@ -1,286 +1,502 @@
-import numpy as np
-
-import gvar as gv
-
-import h5py
-
-from dataclasses import dataclass, field, fields
-
-from pathlib import Path
-
-from typing import Self, List, Dict
-
-from .fitResult import FitResult
+from __future__ import annotations
 
 import re
-
 import warnings
+from typing import Literal
 
-from typing import Any, Dict
+import h5py
+import numpy as np
 
-def _read_ds(ds: h5py.Dataset):
-    """Read an h5py dataset, decoding strings when needed."""
-    # h5py>=3: this returns str instead of bytes for string datasets
+from .data import Data
+from .fitResult import FitResult
+
+
+# =============================================================================
+# HDF5 helper
+# =============================================================================
+
+def _read_str_dataset(ds: h5py.Dataset) -> list[str]:
+    """
+    Read an HDF5 string dataset and return a plain list of str.
+
+    Handles both h5py ≥ 3 (native str) and older byte-string datasets.
+    """
     try:
-        return ds.asstr()[()]
+        raw = ds.asstr()[()]
     except Exception:
-        data = ds[()]
-        if isinstance(data, (bytes, bytearray)):
-            return data.decode("utf-8")
-        if isinstance(data, np.ndarray) and data.dtype.kind in ("S", "O"):
-            return np.array(
-                [x.decode("utf-8") if isinstance(x, (bytes, bytearray)) else x for x in data],
-                dtype=object,
-            )
-        return data
+        raw = ds[()]
+
+    if isinstance(raw, (bytes, bytearray)):
+        return [raw.decode("utf-8")]
+    if isinstance(raw, str):
+        return [raw]
+    if isinstance(raw, np.ndarray):
+        return [
+            x.decode("utf-8") if isinstance(x, (bytes, bytearray)) else str(x)
+            for x in raw.flat
+        ]
+    return list(raw)
 
 
-@dataclass
+# =============================================================================
+# FitState
+# =============================================================================
+
 class FitState:
-    
-    # list of fit results: Defining the state of the fitter
-    fit_results: List[FitResult] = field(default_factory=lambda: [])  
-    
-    # collection of keys in the state
-    keys_all: list[str] = field(default_factory=list[str])
-    
-    # a dictionary to store the model averaged params
-    # This dictionary will be filled when model_average is called
-    param_avg: dict = field(default_factory=dict)
+    """
+    Ordered collection of FitResult objects with model-averaging support.
 
-    def append(self, new_fit: FitResult) -> None:
-        self.fit_results.append(new_fit)
-        # ToDO: add all parameters from the fit to the keys list
-        try:
-            new_keys = list(new_fit.best_fit_param.keys())
-            self.keys_all += [key for key in new_keys if key not in self.keys_all]
-            self.fit_results.sort(key=lambda x: x.AIC)  # sort by AIC
-        except:
-            pass
-        try:
-            new_keys = list(new_fit.best_fit_param_res.keys())
-            self.keys_all += [key for key in new_keys if key not in self.keys_all]
-            self.fit_results.sort(key=lambda x: x.AIC_res)  # sort by AIC
-        except:
-            pass
+    After each call to :meth:`append` the internal list is re-sorted so
+    that the best-fit model is always at index 0.  Two sort criteria are
+    supported:
 
-        return
+    ``sort_by``
+        ``'chi2_dof'`` — sort ascending by χ²/dof (default).
+        ``'AIC'``      — sort ascending by AIC mean.
 
-    def model_average(self, keys: str | list[str] = None) -> dict:
-        N = len(self.fit_results)
+    Parameters
+    ----------
+    sort_by : {'chi2_dof', 'AIC'}
+        Criterion used to order the stored fits.
+    """
 
-        def avg_single_key(key: str) -> None:
-            # prepare arrays for data:
-            param_est = np.empty(N)
-            param_err = np.empty(N)
-            AIC_est = np.empty(N)
+    def __init__(self, sort_by: Literal["chi2_dof", "AIC"] = "chi2_dof") -> None:
+        if sort_by not in ("chi2_dof", "AIC"):
+            raise ValueError(f"sort_by must be 'chi2_dof' or 'AIC', got '{sort_by}'.")
 
-            resamples_available = self.fit_results[0].has_resamples()
+        self.sort_by: str              = sort_by
+        self.fit_results: list[FitResult] = []
+        self.keys_all:    list[str]    = []
 
-            if resamples_available:
-                Nres = self.fit_results[0].Nres
-                AIC_res = np.empty((Nres, N))
-                param_res = np.empty((Nres, N))
-            
-            # if a key is not available in a fit, we need to remove it from the average
-            not_available_fits = []
+    # ------------------------------------------------------------------
+    # Collection interface
+    # ------------------------------------------------------------------
 
-            # collect the data from the state
-            for fitID, fit in enumerate(self.fit_results):
-                params = fit.result_params()
+    def append(self, fit: FitResult) -> None:
+        """
+        Add a FitResult and re-sort the collection.
 
-                if key not in params["est"].keys():
-                    not_available_fits.append(fitID)
-                    continue
+        New parameter keys are merged into :attr:`keys_all` so that
+        :meth:`model_average` can iterate over the full parameter set.
+        """
+        if len(self) > 0:
+            # check resample type and number of resamples
+            if self.fit_results[0].resample_type != fit.resample_type:
+                raise RuntimeError(f"Resample type doesn't match FitState content {self.fit_results[0].resample_type} != new: {fit.resample_type}")
+            if self.fit_results[0].Nresample != fit.Nresample:
+                raise RuntimeError(f"Number resamples doesn't match FitState content {self.fit_results[0].Nresample} != new: {fit.Nresample}")           
 
-                param_est[fitID] = params["est"][key]
-                param_err[fitID] = params["err"][key]
-                AIC_est[fitID]   = fit.AIC
+        self.fit_results.append(fit)
 
-                if resamples_available:
-                    param_res[:,fitID] = gv.mean(params["res"][key])
-                    AIC_res[:,fitID]   = fit.AIC_res
-            
-            # Delete the entries for which there is no parameter
-            param_est = np.delete(param_est, not_available_fits)
-            param_err = np.delete(param_err, not_available_fits)
-            AIC_est = np.delete(AIC_est, not_available_fits)
+        for key in fit.params:
+            if key not in self.keys_all:
+                self.keys_all.append(key)
 
-            if resamples_available:
-                param_res = np.delete(param_res, not_available_fits, axis = 1)
-                AIC_res = np.delete(AIC_res, not_available_fits, axis = 1)
+        self._sort()
 
-            if not self.param_avg:
-                self.param_avg["est"] = {}
-                self.param_avg["err"] = {}
+    def _sort(self) -> None:
+        if self.sort_by == "chi2_dof":
 
-            # do model average for key for central value fit results
-            if self.fit_results[0].has_central_value():
-                # 1) calculate weights from the AIC, where the AIC are normalized s.t. the smallest AICs = 0
-                # This has no effect on the outcome but can prevent overflows for very negative AICs
-                weights_est = np.exp(-0.5 * (AIC_est - np.min(AIC_est)))
-                # we normalize here already in order to have the normalized weight in the uncertainty computation
-                weights_est /= np.sum(weights_est)
-                # 2) the model average is now simply the weighted average of the parameters
-                # \bar{p} = (\sum_{i=0}^{num_fits} p_i w_i) / (\sum_{i=0} w_i)
-                modelAvg_est = np.average(param_est, weights=weights_est)
-                # 3) finally we express the error of parameters by its weighted average according to
-                # Δ\bar{p}^2 = \sum_{i=0}^{num_fits} (Δp_i w_i / (\sum_{j}^{num_fits} w_j) )^2
-                # TODO: This ignores correlation between the fit results
-                modelAvg_err = np.sqrt(np.sum(param_err**2 * weights_est**2))
-
-                # finally store the result in the output array
-                self.param_avg["est"][key] = modelAvg_est
-                self.param_avg["err"][key] = modelAvg_err
-
-            # model averaging for bootstrap fit results
-            if self.fit_results[0].has_resamples():
-                if not self.param_avg:
-                    self.param_avg["res"] = {}
-                elif "res" not in self.param_avg.keys():
-                    self.param_avg["res"] = {}
-                
-                # Steps are similar as above, for the central value results, but extended to every sample result:
-                # 1) calculate weights
-                weights_res = np.exp(-0.5 * (AIC_res - np.min(AIC_res,axis=1)[:,None]))
-                weights_res /= np.sum(weights_res, axis = 1)[:,None]
-                # 2) model average
-                modelAvg_res = np.average(param_res, weights=weights_res, axis=1)
-                # 3) calculate the uncertainty. This is changed as we don't rely on error propagation but instead 
-                #    compute the combined bootstrap + model average error.
-                #    This is in principle a very conservative estimate as it captures uncertainties on the model.
-                # This potentially overwrites the error above. This IS intended as by default the bootstrap uncertainty is
-                # more reliable than the simple error propagation!
-                if self.fit_results[0].resample_type == 'bst':
-                    self.param_avg["err"][key] = np.std(modelAvg_res,axis=0)
-                elif self.fit_results[0].resample_type == 'jkn':
-                    self.param_avg["err"][key] = np.sqrt(Nres-1) * np.std(modelAvg_res,axis=0)
-                # if no central value fit is done we simply compute the mean over bootstrap fits
-                # these two values are equal provided, same fitting strategy!
-                if self.fit_results[0].AIC is None:  # check if central value fit
-                    self.param_avg["est"][key] = np.mean(modelAvg_res, axis = 0)
-                # finally the bootstrap results will be stored too:
-                self.param_avg["res"][key] = modelAvg_res
-        # end def avg_single_key
-
-        # go through all parameters and do model averaging for each of them:
-        if isinstance(keys, list):  # if argument was given
-            for key in keys:
-                if key not in self.keys_all:
-                    raise KeyError(
-                        f'The given key "{key}" is not a fit parameter, choose one parameter from {self.keys_all} for the model average.'
-                    )
-                avg_single_key(key=key)
-
-            out = {}
-            for res_type_key in ["est","err","res"]:
-                if res_type_key not in self.param_avg.keys(): continue
-                out[res_type_key] = {key:self.param_avg[res_type_key][key] for key in keys} 
-            return out
-
-        elif isinstance(keys, str):  # if argument was given
-            if keys not in self.keys_all:
-                raise KeyError(
-                    f'The given key "{keys}" is not a fit parameter, choose one parameter from {self.keys_all} for the model average.'
-                )
-            
-            avg_single_key(key=keys)
-
-            out = {}
-            for res_type_key in ["est","err","res"]:
-                if res_type_key not in self.param_avg.keys(): continue
-                out[res_type_key] = self.param_avg[res_type_key][keys] 
-            return out
+            self.fit_results.sort(key=lambda r: (r.chi2.mean if isinstance(r.chi2,Data) else r.chi2) / r.dof)
         else:
-            for key in self.keys_all:
-                avg_single_key(key=key)
-            return self.param_avg
+            self.fit_results.sort(key=lambda r: r.AIC.mean if isinstance(r.AIC, Data) else r.AIC)
 
-    def __getitem__(self, index: int) -> FitResult:
-        """method that gets a fit result based on the index in the fit_result list, list is sorted by AIC"""
-        return self.fit_results[index]
-
-    def __len__(self):
-        """
-        Returns the number of fits which are being tracked.
-        """
-
+    def __len__(self) -> int:
         return len(self.fit_results)
 
-    # dumps all information of the FitState in a h5 File
-    def serialize_all(
-        self, h5_file: h5py.File
-    ) -> None:
+    def __getitem__(self, index: int) -> FitResult:
+        return self.fit_results[index]
+
+    def __iter__(self):
+        return iter(self.fit_results)
+
+    def __repr__(self) -> str:
+        lines = [f"FitState ({len(self)} fits, sort_by='{self.sort_by}'):"]
+        for i, fit in enumerate(self.fit_results):
+            chi2_dof = fit.chi2.mean / fit.dof if fit.dof else float("nan")
+            keys     = ", ".join(fit.params.keys())
+            lines.append(
+                f"  [{i}]  χ²/dof={chi2_dof:.3g}  AIC={fit.AIC.mean:.3g}"
+                f"  params=[{keys}]"
+            )
+        return "\n".join(lines)
+
+    # ------------------------------------------------------------------
+    # Internal helpers shared by model_average and eval_model_avg
+    # ------------------------------------------------------------------
+
+    def _resample_config(self) -> tuple[str | None, int | None]:
+        """Return the (resample_type, Nresample) of the first stored fit."""
         if not self.fit_results:
-            raise Warning(f"Import FitResults first with {type(self).__name__}.append(new_fit : FitResult) before saving in an h5 file.")
+            raise RuntimeError("FitState is empty.")
+        first = self.fit_results[0]
+        return first.resample_type, first.Nresample
 
-        for field in fields(self):
-            field_value = getattr(self, field.name)
-            # print(field.name,field_value)
-            # save the fit results using the serialize method from FitResult class
-            if field.name == "fit_results":
-                for i, fit in enumerate(field_value):
-                    fit.serialize(h5_handle=h5_file, node=f"FitResults/Fit{i}")
+    def _aic_weights(
+        self,
+        aic_stack: Data,
+    ) -> Data:
+        """
+        Compute normalised AIC weights from a (Nfits,) Data object.
 
-            # save the keys
-            elif field.name == "keys_all":
-                h5_file.create_dataset(f"ModelAverage/KeysList", data=field_value)
+        For the central value:
+            w_i = exp(-0.5 * (AIC_i - min(AIC))) / sum_j w_j
 
-            # save the averaged parameters
-            elif field.name == "param_avg":
-                for item in field_value:
-                    for key in field_value[item]:
-                        h5_file.create_dataset(
-                            f"ModelAverage/Parameters/{item}/{key}",
-                            data=field_value[item][key],
-                        )
-        return
+        For resamples the same formula is applied per resample so that
+        the weight distribution reflects resample-level uncertainty.
 
-    def deserialize_all(self, h5_file: h5py.File):
-        if "FitResults" in h5_file:
-            fr_grp = h5_file["FitResults"]
+        Parameters
+        ----------
+        aic_stack : Data, shape (Nfits,)
+            AIC values collected across all contributing fits.
 
-            def _fit_idx(name: str) -> int:
-                m = re.search(r"(\d+)$", name)
-                return int(m.group(1)) if m else -1
+        Returns
+        -------
+        Data, shape (Nfits,)
+            Normalised weights with the same resample structure.
+        """
+        # Central-value weights
+        aic_min_cv    = np.min(aic_stack.mean)
+        weights_cv    = np.exp(-0.5 * (aic_stack.mean - aic_min_cv))
+        weights_cv   /= weights_cv.sum()
 
-            for node_name in sorted(fr_grp.keys(), key=_fit_idx):
-                node_path = f"FitResults/{node_name}"
-                self.fit_results.append(FitResult.deserialize(h5_handle=h5_file, node=node_path))
-        else:
-            raise RuntimeError("No 'FitResults' group found")
+        resample_type, Nresample = self._resample_config()
+        weights = Data.zeros(
+            resample_type=resample_type,
+            shape=aic_stack.mean.shape,
+            Nresample=Nresample,
+            locked_mean=True,
+        )
+        weights.mean = weights_cv
 
-        # ---------- ModelAverage/KeysList ----------
-        self.keys_all = []
-        try:
-            keys = _read_ds(h5_file["ModelAverage/KeysList"])
-            if isinstance(keys, np.ndarray):
-                self.keys_all = keys.tolist()
-            elif np.isscalar(keys):
-                self.keys_all = [keys.item() if hasattr(keys, "item") else keys]
-            else:
-                # iterable but not str/bytes -> list; str -> wrap
-                self.keys_all = list(keys) if not isinstance(keys, (str, bytes)) else [keys]
-        except KeyError:
-            warnings.warn("No 'ModelAverage/KeysList' dataset found; leaving `keys_all` empty.", RuntimeWarning)
+        if resample_type is not None:
+            for nres in range(Nresample):
+                aic_rs   = aic_stack.rspl[nres]
+                w_rs     = np.exp(-0.5 * (aic_rs - aic_rs.min()))
+                weights.rspl[nres] = w_rs / w_rs.sum()
 
-        # ---------- ModelAverage/Parameters/<item>/<key> ----------
-        self.param_avg: Dict[str, Dict[str, Any]] = {}
-        try:
-            params_grp = h5_file["ModelAverage/Parameters"]
-            for item in params_grp.keys():
-                inner: Dict[str, Any] = {}
-                for key in params_grp[item].keys():
-                    inner[key] = _read_ds(params_grp[item][key])
-                self.param_avg[item] = inner
-        except KeyError:
-            warnings.warn("No 'ModelAverage/Parameters' group found; leaving `param_avg` empty.", RuntimeWarning)
+        return weights
 
-        # Optional: mirror your save-time guard as a load-time sanity note
+    # ------------------------------------------------------------------
+    # Model average of scalar parameters
+    # ------------------------------------------------------------------
+
+    def model_average(
+        self,
+        keys: str | list[str] | None = None,
+        abscissa: np.ndarray | None = None,
+    ) -> Data | dict[str, Data]:
+        """
+        Compute the AIC-weighted model average of fit parameters or model
+        evaluations.
+
+        Passing ``keys="fcn"`` (or calling :meth:`model_average_eval`
+        directly) triggers function-evaluation averaging: every stored
+        model is evaluated on *abscissa* and the results are combined with
+        AIC weights, returning a single ``Data`` object of shape
+        ``(len(abscissa),)``.
+
+        For scalar parameters, fits that do not contain a requested key
+        are silently excluded from that key's average.
+
+        Parameters
+        ----------
+        keys : str | list[str] | None
+            Parameter name(s) to average.  Use ``"fcn"`` to average model
+            evaluations instead.  If ``None``, all parameters in
+            :attr:`keys_all` are averaged and returned as a dict.
+        abscissa : np.ndarray | None
+            Required when ``keys="fcn"``; the points at which each model
+            is evaluated before averaging.
+
+        Returns
+        -------
+        Data
+            If *keys* is a single string (including ``"fcn"``).
+        dict[str, Data]
+            If *keys* is a list or ``None``.
+        """
         if not self.fit_results:
-            warnings.warn(
-                f"No FitResults loaded. Ensure the HDF5 file contains groups like 'FitResults/Fit0', 'FitResults/Fit1', ...",
-                RuntimeWarning,
+            raise RuntimeError("FitState is empty — nothing to average.")
+
+        # ---- function-evaluation branch ----
+        if keys == "fcn":
+            if abscissa is None:
+                raise ValueError(
+                    "abscissa must be provided when keys='fcn'."
+                )
+            return self._eval_model_avg_impl(abscissa)
+
+        # ---- scalar-parameter branch ----
+        if isinstance(keys, str):
+            self._check_key(keys)
+            return self._avg_single_param(keys)
+
+        if isinstance(keys, list):
+            for key in keys:
+                self._check_key(key)
+            return {key: self._avg_single_param(key) for key in keys}
+
+        # keys is None → average everything
+        return {key: self._avg_single_param(key) for key in self.keys_all}
+
+    def _check_key(self, key: str) -> None:
+        if key not in self.keys_all:
+            raise KeyError(
+                f"'{key}' is not a known fit parameter.  "
+                f"Available keys: {self.keys_all}"
             )
 
+    def _avg_single_param(self, key: str) -> Data:
+        """AIC-weighted average of a single parameter across all fits that contain it."""
+        resample_type, Nresample = self._resample_config()
 
+        contributing = [fit for fit in self.fit_results if key in fit.params]
+        if not contributing:
+            raise RuntimeError(
+                f"No fit in this FitState contains the parameter '{key}'."
+            )
+        Nfits = len(contributing)
+
+        # Collect parameter values and AIC into (Nfits,) Data objects.
+        param_stack = Data.zeros(
+            resample_type=resample_type,
+            shape=(Nfits,),
+            Nresample=Nresample,
+            locked_mean=True,
+        )
+        aic_stack = Data.zeros(
+            resample_type=resample_type,
+            shape=(Nfits,),
+            Nresample=Nresample,
+            locked_mean=True,
+        )
+
+        for fit_id, fit in enumerate(contributing):
+            param_stack.mean[fit_id] = fit.params[key].mean
+            aic_stack.mean[fit_id]   = fit.AIC.mean
+            if resample_type is not None:
+                for nres in range(Nresample):
+                    param_stack.rspl[nres][fit_id] = fit.params[key].rspl[nres]
+                    aic_stack.rspl[nres][fit_id]   = fit.AIC.rspl[nres]
+
+        weights = self._aic_weights(aic_stack)
+
+        # Weighted average: scalar result.
+        avg_cv = float(np.dot(weights.mean, param_stack.mean))
+
+        out = Data.zeros(
+            resample_type=resample_type,
+            shape=None,
+            Nresample=Nresample,
+            locked_mean=True,
+        )
+        out.mean = avg_cv
+
+        if resample_type is not None:
+            for nres in range(Nresample):
+                out.rspl[nres] = float(
+                    np.dot(weights.rspl[nres], param_stack.rspl[nres])
+                )
+
+        return out
+
+    # ------------------------------------------------------------------
+    # Model average of function evaluations
+    # ------------------------------------------------------------------
+
+    def _eval_model_avg_impl(self, abscissa: np.ndarray) -> Data:
+        """
+        Evaluate each stored model on *abscissa* and return the
+        AIC-weighted model average as a :class:`Data` object.
+
+        Called by ``model_average(keys='fcn', abscissa=...)`` and by the
+        convenience alias :meth:`model_average_eval`.
+
+        The weighting follows the same scheme as :meth:`model_average`:
+        for the central value (and independently for each resample) the
+        weights are
+
+            w_i ∝ exp(-0.5 * (AIC_i - min(AIC)))
+
+        All fits must share the same ``resample_type`` and ``Nresample``.
+
+        Parameters
+        ----------
+        abscissa : np.ndarray
+            Points at which to evaluate the models.
+
+        Returns
+        -------
+        Data, shape (len(abscissa),)
+            Model-averaged function values with full resample information.
+        """
+        resample_type, Nresample = self._resample_config()
+        Nfits = len(self.fit_results)
+        Nout  = len(abscissa)
+
+        # ---- collect per-fit evaluations and AIC into stacked arrays ----
+        # eval_stack : shape (Nfits, Nout)  — central-value model curves
+        # aic_stack  : shape (Nfits,)       — central-value AIC
+        eval_stack_cv = np.empty((Nfits, Nout), dtype=float)
+        aic_stack_cv  = np.empty((Nfits,),      dtype=float)
+
+        # For resample fits we need (Nresample, Nfits, Nout) and (Nresample, Nfits).
+        if resample_type is not None:
+            eval_stack_rs = np.empty((Nresample, Nfits, Nout), dtype=float)
+            aic_stack_rs  = np.empty((Nresample, Nfits),       dtype=float)
+
+        for fit_id, fit in enumerate(self.fit_results):
+            prediction = fit.eval(abscissa)      # returns Data, shape (Nout,)
+
+            eval_stack_cv[fit_id] = prediction.mean
+            aic_stack_cv[fit_id]  = fit.AIC.mean
+
+            if resample_type is not None:
+                for nres in range(Nresample):
+                    eval_stack_rs[nres, fit_id] = prediction.rspl[nres]
+                    aic_stack_rs[nres, fit_id]  = fit.AIC.rspl[nres]
+
+        # ---- central-value weighted average ----
+        w_cv = np.exp(-0.5 * (aic_stack_cv - aic_stack_cv.min()))
+        w_cv /= w_cv.sum()
+        # w_cv: (Nfits,)  ×  eval_stack_cv: (Nfits, Nout)  →  (Nout,)
+        avg_cv = w_cv @ eval_stack_cv
+
+        # ---- build output Data object ----
+        out = Data.zeros(
+            resample_type=resample_type,
+            shape=(Nout,),
+            Nresample=Nresample,
+            locked_mean=True,
+        )
+        out.mean = avg_cv
+
+        if resample_type is not None:
+            for nres in range(Nresample):
+                aic_rs  = aic_stack_rs[nres]               # (Nfits,)
+                w_rs    = np.exp(-0.5 * (aic_rs - aic_rs.min()))
+                w_rs   /= w_rs.sum()
+                out.rspl[nres] = w_rs @ eval_stack_rs[nres]   # (Nout,)
+
+        return out
+
+    def model_average_eval(self, abscissa: np.ndarray) -> Data:
+        """
+        Convenience alias for ``model_average(keys='fcn', abscissa=abscissa)``.
+
+        Parameters
+        ----------
+        abscissa : np.ndarray
+            Points at which to evaluate the models.
+
+        Returns
+        -------
+        Data, shape (len(abscissa),)
+            Model-averaged function values with full resample information.
+        """
+        if not self.fit_results:
+            raise RuntimeError("FitState is empty — nothing to evaluate.")
+        return self._eval_model_avg_impl(abscissa)
+
+    # ------------------------------------------------------------------
+    # HDF5 serialisation
+    # ------------------------------------------------------------------
+
+    def serialize(self, h5_file: h5py.File) -> None:
+        """
+        Write the full FitState into an open HDF5 file.
+
+        Layout
+        ------
+        ``FitResults/Fit0``, ``FitResults/Fit1``, …
+            One group per FitResult, written by ``FitResult.serialize``.
+        ``ModelAverage/KeysList``
+            List of all parameter keys seen across all stored fits.
+        ``FitState/sort_by``
+            The sort criterion so the object reconstructs identically.
+
+        Parameters
+        ----------
+        h5_file : h5py.File
+            Open, writable HDF5 file handle.
+        """
+        if not self.fit_results:
+            raise ValueError(
+                "FitState is empty.  Add fits with .append() before serialising."
+            )
+
+        for fit_id, fit in enumerate(self.fit_results):
+            fit.serialize(h5_handle=h5_file, node=f"FitResults/Fit{fit_id}")
+
+        h5_file.create_dataset("ModelAverage/KeysList", data=self.keys_all)
+        h5_file.create_dataset("FitState/sort_by",      data=self.sort_by)
+
+    @staticmethod
+    def deserialize(h5_file: h5py.File) -> FitState:
+        """
+        Reconstruct a FitState from an open HDF5 file.
+
+        Parameters
+        ----------
+        h5_file : h5py.File
+            Open HDF5 file handle (read mode is sufficient).
+
+        Returns
+        -------
+        FitState
+        """
+        # --- sort criterion ---
+        sort_by = "chi2_dof"
+        if "FitState/sort_by" in h5_file:
+            raw = h5_file["FitState/sort_by"][()]
+            sort_by = raw.decode("utf-8") if isinstance(raw, (bytes, bytearray)) else str(raw)
+
+        state = FitState(sort_by=sort_by)
+
+        # --- fit results ---
+        if "FitResults" not in h5_file:
+            raise RuntimeError(
+                "HDF5 file contains no 'FitResults' group.  "
+                "Was it written by FitState.serialize()?"
+            )
+
+        fr_grp = h5_file["FitResults"]
+
+        def _fit_index(name: str) -> int:
+            m = re.search(r"(\d+)$", name)
+            return int(m.group(1)) if m else -1
+
+        for node_name in sorted(fr_grp.keys(), key=_fit_index):
+            fit = FitResult.deserialize(h5_handle=h5_file, node=f"FitResults/{node_name}")
+            # Append without re-sorting during load; sort once at the end.
+            state.fit_results.append(fit)
+            for key in fit.params:
+                if key not in state.keys_all:
+                    state.keys_all.append(key)
+
+        # --- keys list (may contain keys from fits that lacked resamples) ---
+        if "ModelAverage/KeysList" in h5_file:
+            loaded_keys = _read_str_dataset(h5_file["ModelAverage/KeysList"])
+            for key in loaded_keys:
+                if key not in state.keys_all:
+                    state.keys_all.append(key)
+        else:
+            warnings.warn(
+                "No 'ModelAverage/KeysList' dataset found; keys_all rebuilt "
+                "from the loaded FitResults.",
+                RuntimeWarning,
+                stacklevel=2,
+            )
+
+        if not state.fit_results:
+            warnings.warn(
+                "No FitResults were loaded.  Check that the HDF5 file was "
+                "written by FitState.serialize().",
+                RuntimeWarning,
+                stacklevel=2,
+            )
+        else:
+            state._sort()
+
+        return state
