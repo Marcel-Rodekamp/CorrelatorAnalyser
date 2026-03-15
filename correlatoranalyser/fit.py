@@ -25,6 +25,10 @@ def fit(
         from .fit_adam_iminuit_hybrid import fit_adam_iminuit_hybrid
         return fit_adam_iminuit_hybrid( **kwargs ) 
 
+    elif backend == "thc":
+        from .thc import thc
+        return thc(**kwargs)
+
     else:
         raise ValueError(f"Couldn't identify backkend {backend}. Must be one of ['iminuit', 'lsqfit', 'linear regression', 'hybrid:adam+iminuit']")
     

@@ -340,10 +340,16 @@ class FitResult:
             if self.abscissa is not None
             else "?"
         )
+        
+        if hasattr(self, "truncation_dimension"):
+            truncation_report = f"THC @ truncation dimension:{self.truncation_dimension}, "
+        else:
+            truncation_report = ""
+
         resample_tag = self.resample_type if self.has_resamples else False
         if self.has_resamples:
             lines = [
-                f"FitResult[{abscissa_range}, Ndata={self.Ndata}, resample:{resample_tag}]:",
+                f"FitResult[{truncation_report}{abscissa_range}, Ndata={self.Ndata}, resample:{resample_tag}]:",
                 f"  χ²/dof [dof]   = {self.chi2.mean / self.dof:.3g} [{self.dof}]",
                 f"  χ²/<χ²> [<χ²>] = {self.chi2.mean / self.expected_chi2.mean:.3g} [{self.expected_chi2.mean:.3g}]",
                 f"  p-value        = {self.p_value.mean:.3g}",
@@ -351,7 +357,7 @@ class FitResult:
             ]
         else:
             lines = [
-                f"FitResult[{abscissa_range}, Ndata={self.Ndata}, resample:{resample_tag}]:",
+                f"FitResult[{truncation_report}{abscissa_range}, Ndata={self.Ndata}, resample:{resample_tag}]:",
                 f"  χ²/dof [dof] = {self.chi2 / self.dof:.3g} [{self.dof}]",
                 f"  χ²/<χ²> [<χ²>] = {self.chi2 / self.expected_chi2:.3g} [{self.expected_chi2:.3g}]",
                 f"  p-value      = {self.p_value:.3g}",
@@ -428,6 +434,15 @@ class FitResult:
             elif val is not None:
                 grp.create_dataset(name, data=val)
 
+        # --- Lambda eigenvalues (THC backend only) ---
+        for _attr in ("lambda_eigs_real", "lambda_eigs_imag"):
+            _val = getattr(self, _attr, None)
+            if _val is not None:
+                if isinstance(_val, Data):
+                    _val.serialize(grp, node=_attr)
+                else:
+                    grp.create_dataset(_attr, data=_val)
+
     @staticmethod
     def deserialize(h5_handle: h5py.File, node: str | None = None) -> FitResult:
         """
@@ -503,6 +518,15 @@ class FitResult:
             if val is not None:
                 setattr(out, name, val)
 
+        # Lambda eigenvalues (THC backend only)
+        for _attr in ("lambda_eigs_real", "lambda_eigs_imag"):
+            if _attr in grp:
+                _node = grp[_attr]
+                if isinstance(_node, h5py.Dataset):
+                    setattr(out, _attr, _node[()])
+                else:
+                    setattr(out, _attr, Data.deserialize(grp, node=_attr))
+
         return out
 
     # ------------------------------------------------------------------
@@ -518,6 +542,22 @@ class FitResult:
         """Create the Hessian-error Data entry for *key* if it does not yet exist."""
         if key not in self.params_hessian_err:
             self.params_hessian_err[key] = _make_param_data(self.resample_type, self.Nresample)
+
+    def _ensure_lambda_store(self,max_k: int) -> None:
+        """Create the Data entry for eigenvaues of the THC (exponential energies)"""
+        if not hasattr(self, "lambda_eigs") or getattr(self, "lambda_eigs") is None:
+            if self.has_resamples:
+                store = Data.empty(
+                    resample_type = self.resample_type,
+                    shape         = (max_k,),
+                    Nresample     = self.Nresample,
+                    locked_mean   = True,
+                    dtype         = complex
+                )
+                self.lambda_eigs = store
+            else:
+                # set as plain array on CV path
+                self.lambda_eigs = None
 
     def _store_fit_quality(
         self, chi2: float, expected_chi2: float | None, nres: int | None
@@ -852,3 +892,125 @@ class FitResult:
         )
 
         self._store_fit_quality(chi2, exp_chi2, nres)
+
+    def import_from_thc(
+        self,
+        energies,
+        overlaps,
+        lambda_eigvals,
+        chi2_val: float,
+        max_k: int,
+        W_chi2,
+        cov,
+        abscissa_fit,
+        truncation_dimension:int,
+        nres=None,
+    ) -> None:
+        """
+        Import results from a THC (Truncated Hankel Correlator) run.
+    
+        Unlike the other importers, there is no backend object: the relevant
+        quantities are passed as plain numpy arrays.
+    
+        Parameters
+        ----------
+        energies : np.ndarray, shape (Nstates,)
+            Physical energies E_l (ascending), np.nan for unresolved states.
+            **Physical result** — stored in ``self.params`` as ``E0, E1, ...``.
+        overlaps : np.ndarray, shape (Nstates,)
+            Amplitude coefficients A_l, np.nan for unresolved states.
+            **Physical result** — stored in ``self.params`` as ``A0, A1, ...``.
+        lambda_real : np.ndarray, shape (k_used,)
+            Real parts of the raw (unfiltered) eigenvalues Lambda of X,
+            where Lambda_l ≈ exp(-E_l * delta_t).
+            **Algorithmic result** — stored in ``self.lambda_eigs_real``,
+            NOT in ``self.params``.  Padded to ``max_k`` with np.nan.
+        lambda_imag : np.ndarray, shape (k_used,)
+            Imaginary parts of Lambda.  Stored in ``self.lambda_eigs_imag``.
+            A physical energy has |Im(Lambda)| ≈ 0 and 0 < |Lambda| < 1.
+        chi2_val : float
+            chi²_obs = r^T W r evaluated by the thc() driver.
+        max_k : int
+            Length of the lambda_eigs_real / lambda_eigs_imag storage arrays.
+        W_chi2 : np.ndarray, shape (Ndata, Ndata)
+            Weight matrix used for chi2_obs (also used for expected_chi2).
+        cov : np.ndarray, shape (Ndata, Ndata)
+            Full data covariance (used for compute_expected_chi2).
+        abscissa_fit : np.ndarray, shape (Ndata,)
+            Timeslice values t0, t0+1, ..., T used in chi2.
+        truncation_dimension :
+            The truncation dimension of the thc method.
+        nres : int | None
+            Resample index.  None -> central-value result.
+        """
+        import numpy as np
+        from .data import Data as _Data
+    
+        Nstates = len(energies)
+
+        self.truncation_dimension = truncation_dimension
+    
+        # ------------------------------------------------------------------
+        # Physical parameters: energies E0..E{N-1} and amplitudes A0..A{N-1}
+        # ------------------------------------------------------------------
+        for k in range(Nstates):
+            for prefix, arr in (("E", energies), ("A", overlaps)):
+                key = f"{prefix}{k}"
+                self._ensure_param(key)
+                val = float(arr[k])   # may be nan; stored as-is
+                if nres is None:
+                    self.params[key].mean = val
+                else:
+                    self.params[key].rspl[nres] = val
+    
+        # ------------------------------------------------------------------
+        # Algorithmic result: Lambda eigenvalues, split into real and imag.
+        # Stored as two separate Data objects to avoid complex dtype issues
+        # in Data internals and HDF5 serialisation.  Lazily initialised on
+        # the first call so the storage size (max_k) is known.
+        # ------------------------------------------------------------------
+        self._ensure_lambda_store(max_k=max_k)
+
+        extended_evals = np.full(max_k, np.nan, dtype=complex)
+        n_lam =  min(len(lambda_eigvals), max_k)
+        extended_evals[:n_lam] = lambda_eigvals[:n_lam]
+
+        if nres is None:
+            if self.has_resamples:
+                self.lambda_eigs.mean = extended_evals
+            else:
+                self.lambda_eigs = extended_evals
+        else:
+            self.lambda_eigs.rspl[nres] = extended_evals
+    
+        # ------------------------------------------------------------------
+        # expected_chi2: compute if model.grad is available and no nan params
+        # ------------------------------------------------------------------
+        exp_chi2 = self.dof
+        if (
+            self.fcn is not None
+            and hasattr(self.fcn, "grad")
+            and not np.any(np.isnan(energies))
+            and cov is not None
+            and W_chi2 is not None
+        ):
+            params_cur = {}
+            for k in range(Nstates):
+                params_cur[f"E{k}"] = (
+                    self.params[f"E{k}"].mean if nres is None
+                    else self.params[f"E{k}"].rspl[nres]
+                )
+                params_cur[f"A{k}"] = (
+                    self.params[f"A{k}"].mean if nres is None
+                    else self.params[f"A{k}"].rspl[nres]
+                )
+
+            J        = self.fcn.grad(abscissa_fit, params_cur)   # (2*Nstates, Ndata)
+            exp_chi2 = self.compute_expected_chi2(
+                cov=cov, W=W_chi2, J=J, Npriors=0,
+            )
+    
+        # ------------------------------------------------------------------
+        # chi2, p-value, AIC via the standard _store_fit_quality helper
+        # ------------------------------------------------------------------
+        self._store_fit_quality(chi2_val, exp_chi2, nres)
