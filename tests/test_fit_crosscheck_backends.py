@@ -263,7 +263,7 @@ class TestConsistencyLinear:
             abscissa=x, ordinate=ordinate,
             central_value_fit=cv, central_value_fit_correlated=cv_corr,
             resample_fit=rs,      resample_fit_correlated=rs_corr,
-            model=model_linear, p0=P0_LINEAR,
+            model=model_linear, p0=P0_LINEAR, strategy=2,
         )
         other = fit_lsqfit(
             abscissa=x, ordinate=ordinate,
@@ -282,13 +282,13 @@ class TestConsistencyLinear:
             abscissa=x, ordinate=ordinate,
             central_value_fit=cv, central_value_fit_correlated=cv_corr,
             resample_fit=rs,      resample_fit_correlated=rs_corr,
-            model=model_linear, p0=P0_LINEAR,
+            model=model_linear, p0=P0_LINEAR, strategy=2,
         )
         other = fit_adam_iminuit_hybrid(
             abscissa=x, ordinate=ordinate,
             central_value_fit=cv, central_value_fit_correlated=cv_corr,
             resample_fit=rs,      resample_fit_correlated=rs_corr,
-            model=model_linear, p0=P0_LINEAR,
+            model=model_linear, p0=P0_LINEAR, strategy=2,
             **_ADAM,
         )
         _compare(ref, other, atol=ATOL_IMINUIT, label="hybrid vs iminuit [linear]")
@@ -325,7 +325,7 @@ class TestConsistencySingleExp:
             central_value_fit=cv, central_value_fit_correlated=cv_corr,
             resample_fit=rs,      resample_fit_correlated=rs_corr,
             model=model_single_exp, p0=P0_SINGLE_EXP,
-            limits=self._limits,
+            limits=self._limits, strategy=2,
         )
         other = fit_lsqfit(
             abscissa=t, ordinate=ordinate,
@@ -348,7 +348,7 @@ class TestConsistencySingleExp:
             central_value_fit=cv, central_value_fit_correlated=cv_corr,
             resample_fit=rs,      resample_fit_correlated=rs_corr,
             model=model_single_exp, p0=P0_SINGLE_EXP,
-            limits=self._limits,
+            limits=self._limits, strategy=2,
         )
         model_single_exp.grad = _grad_single_exp_varproj
         try:
@@ -358,7 +358,7 @@ class TestConsistencySingleExp:
                 resample_fit=rs,      resample_fit_correlated=rs_corr,
                 model=model_single_exp, linear_params=["A"],
                 p0=P0_SINGLE_EXP,
-                limits=self._limits,
+                limits=self._limits, strategy=2,
             )
         finally:
             model_single_exp.grad = _grad_single_exp
@@ -374,14 +374,14 @@ class TestConsistencySingleExp:
             central_value_fit=cv, central_value_fit_correlated=cv_corr,
             resample_fit=rs,      resample_fit_correlated=rs_corr,
             model=model_single_exp, p0=P0_SINGLE_EXP,
-            limits=self._limits,
+            limits=self._limits, strategy=2,
         )
         other = fit_adam_iminuit_hybrid(
             abscissa=t, ordinate=ordinate,
             central_value_fit=cv, central_value_fit_correlated=cv_corr,
             resample_fit=rs,      resample_fit_correlated=rs_corr,
             model=model_single_exp, p0=P0_SINGLE_EXP,
-            limits=self._limits,
+            limits=self._limits, strategy=2,
             **_ADAM,
         )
         _compare(ref, other, atol=ATOL_IMINUIT, label="hybrid vs iminuit [single-exp]")
@@ -396,7 +396,7 @@ class TestConsistencySingleExp:
             central_value_fit=cv, central_value_fit_correlated=cv_corr,
             resample_fit=rs,      resample_fit_correlated=rs_corr,
             model=model_single_exp, p0=P0_SINGLE_EXP,
-            limits=self._limits,
+            limits=self._limits, strategy=2,
         )
         model_single_exp.grad = _grad_single_exp_varproj
         try:
@@ -405,7 +405,7 @@ class TestConsistencySingleExp:
                 central_value_fit=cv, central_value_fit_correlated=cv_corr,
                 resample_fit=rs,      resample_fit_correlated=rs_corr,
                 model=model_single_exp, linear_params=["A"],
-                p0=P0_SINGLE_EXP, limits=self._limits,
+                p0=P0_SINGLE_EXP, limits=self._limits, strategy=2,
                 **_ADAM,
             )
         finally:
@@ -426,7 +426,7 @@ class TestConsistencySingleExp:
             central_value_fit=cv, central_value_fit_correlated=cv_corr,
             resample_fit=rs,      resample_fit_correlated=rs_corr,
             model=model_single_exp, p0=P0_SINGLE_EXP,
-            limits=self._limits,
+            limits=self._limits, strategy=2,
             **_ADAM,
         )
         model_single_exp.grad = _grad_single_exp_varproj
@@ -436,7 +436,7 @@ class TestConsistencySingleExp:
                 central_value_fit=cv, central_value_fit_correlated=cv_corr,
                 resample_fit=rs,      resample_fit_correlated=rs_corr,
                 model=model_single_exp, linear_params=["A"],
-                p0=P0_SINGLE_EXP, limits=self._limits,
+                p0=P0_SINGLE_EXP, limits=self._limits, strategy=2,
                 **_ADAM,
             )
         finally:

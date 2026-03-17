@@ -206,7 +206,7 @@ def _run_adam_then_minuit(fit_args: dict) -> dict:
         )
 
         p0_iminuit = dict(zip(param_names, theta_best))
-        out["minuit"] = _run_minuit(cost, p0_iminuit, limits, maxiter)
+        out["minuit"] = _run_minuit(cost, p0_iminuit, limits, maxiter, fit_args["tol"], fit_args["strategy"])
         out["adam"] = {
             "cost_history": cost_hisory
         }
@@ -281,7 +281,7 @@ def _run_adam_then_minuit_varproj(fit_args: dict) -> dict:
         )
 
         p0_iminuit = dict(zip(param_names, theta_best))
-        minuit, varproj = _run_minuit_varproj(cost, p0_iminuit, limits, maxiter)
+        minuit, varproj = _run_minuit_varproj(cost, p0_iminuit, limits, maxiter, fit_args["tol"], fit_args["strategy"])
         out["minuit"]  = minuit
         out["varproj"] = varproj
     except Exception as e:
@@ -350,6 +350,8 @@ def fit_adam_iminuit_hybrid(
     limits:   dict | None  = None,
     svdcut:   float | None = None,
     maxiter:  int          = 10_000,
+    tolerance: int = 0.1,
+    strategy: int = 0,
     # Parallelisation
     Nproc: int | None = None,
 ) -> FitResult:
@@ -414,6 +416,29 @@ def fit_adam_iminuit_hybrid(
         Relative SVD cut for the covariance matrix in correlated fits.
     maxiter : int
         Maximum Minuit iterations.  (default: 10 000)
+    tol: float
+        Controls stopping criterium of the minimizer:
+            EDM < 0.002 * tol 
+        (default: 0.1)
+    strategy: int
+        "
+        0: Fast. Does not check a user-provided gradient. Does not improve 
+        Hesse matrix at minimum. Extra call to hesse() after migrad() is 
+        always needed for good error estimates. If you pass a user-provided 
+        gradient to MINUIT, convergence is faster.
+
+        1: Default. Checks user-provided gradient against numerical gradient. 
+        Checks and usually improves Hesse matrix at minimum. Extra call to 
+        hesse() after migrad() is usually superfluous. If you pass a 
+        user-provided gradient to MINUIT, convergence is slower.
+
+        2: Careful. Like 1, but does extra checks of intermediate Hessian 
+        matrix during minimization. The effect in benchmarks is a somewhat 
+        improved accuracy at the cost of more function evaluations. A similar 
+        effect can be achieved by reducing the tolerance tol for convergence 
+        at any strategy level.
+        "
+        (default: 0)
     Nproc : int | None
         Number of parallel processes for resample fits.  Serial if ``None``.
 
@@ -531,6 +556,8 @@ def fit_adam_iminuit_hybrid(
             "param_names":  nl_params,
             "limits":       limits,
             "maxiter":      maxiter,
+            "tol": tolerance,
+            "strategy": strategy,
             **adam_kwargs,
         }
         res = _execute(fit_args_cv)
@@ -567,6 +594,10 @@ def fit_adam_iminuit_hybrid(
     # ------------------------------------------------------------------
     # Build per-resample fit arguments
     # ------------------------------------------------------------------
+
+    if central_value_fit:
+        start_vals = {k: v.mean for k,v in fit_result.params.items()}
+
     args = np.empty(Nres, dtype=object)
     if resample_fit_correlated:
         W = cov_inv
@@ -583,6 +614,8 @@ def fit_adam_iminuit_hybrid(
             "param_names":  nl_params,
             "limits":       limits,
             "maxiter":      maxiter,
+            "tol":          tolerance,
+            "strategy":     strategy,
             **adam_kwargs,
         }
 

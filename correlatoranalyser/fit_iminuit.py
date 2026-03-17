@@ -88,7 +88,7 @@ def _build_uncorrelated_cost(abscissa, y_data, sdev_inv, model, param_names, pri
 # Single-fit executor
 # =============================================================================
 
-def _run_minuit(least_square, p0, limits=None, maxiter=10_000):
+def _run_minuit(least_square, p0, limits=None, maxiter=10_000, tol = 0.1, strategy = 0):
     """Construct and minimise a single Minuit instance. Returns the Minuit object."""
     has_grad = hasattr(least_square, "grad")
 
@@ -113,7 +113,8 @@ def _run_minuit(least_square, p0, limits=None, maxiter=10_000):
     # The 1e-10 allows to converge to ~1e-12
     # Note, that at this precision, the Hessian esitimate may become unstable rendering the
     # convergence criterium wrong. 
-    # minuit.tol = 1e-10
+    minuit.tol = tol
+    minuit.strategy = strategy
 
     minuit.migrad(ncall=maxiter)
     return minuit
@@ -142,7 +143,9 @@ def _execute_fits(fit_args, nres=None):
                 fit_args["least_square"],
                 fit_args["p0"],
                 fit_args.get("limits"),
-                fit_args.get("maxiter", 10_000)
+                fit_args.get("maxiter", 10_000),
+                fit_args["tol"],
+                fit_args["strategy"],
             )
         except Exception as e:
             out["error"] = e
@@ -155,7 +158,9 @@ def _execute_fits(fit_args, nres=None):
                 fit_args[res_id]["least_square"],
                 fit_args[res_id]["p0"],
                 fit_args[res_id].get("limits"),
-                fit_args[res_id].get("maxiter", 10_000)
+                fit_args[res_id].get("maxiter", 10_000),
+                fit_args[res_id]["tol"],
+                fit_args[res_id]["strategy"],
             )
         except Exception as e:
             out["error"][res_id] = e
@@ -215,6 +220,8 @@ def fit_iminuit(
     limits: dict | None = None,
     svdcut: float | None = None,
     maxiter: int = 10_000,
+    tolerance: int = 0.1,
+    strategy: int = 0,
     # Parallelisation
     Nproc: int | None = None,
 ) -> FitResult:
@@ -247,6 +254,29 @@ def fit_iminuit(
         Relative SVD cut applied to the covariance matrix for correlated fits.
     maxiter : int
         Maximum number of Minuit iterations. (default: 10 000)
+    tol: float
+        Controls stopping criterium of the minimizer:
+            EDM < 0.002 * tol 
+        (default: 0.1)
+    strategy: int
+        "
+        0: Fast. Does not check a user-provided gradient. Does not improve 
+        Hesse matrix at minimum. Extra call to hesse() after migrad() is 
+        always needed for good error estimates. If you pass a user-provided 
+        gradient to MINUIT, convergence is faster.
+
+        1: Default. Checks user-provided gradient against numerical gradient. 
+        Checks and usually improves Hesse matrix at minimum. Extra call to 
+        hesse() after migrad() is usually superfluous. If you pass a 
+        user-provided gradient to MINUIT, convergence is slower.
+
+        2: Careful. Like 1, but does extra checks of intermediate Hessian 
+        matrix during minimization. The effect in benchmarks is a somewhat 
+        improved accuracy at the cost of more function evaluations. A similar 
+        effect can be achieved by reducing the tolerance tol for convergence 
+        at any strategy level.
+        "
+        (default: 0)
     Nproc : int | None
         Number of parallel processes for resample fits. Serial if None.
 
@@ -297,7 +327,14 @@ def fit_iminuit(
             )
             W = np.diag(1.0 / ordinate.serr**2)
 
-        res = _execute_fits({"least_square": least_square, "p0": start_vals, "limits": limits, "maxiter": maxiter})
+        res = _execute_fits({
+            "least_square": least_square, 
+            "p0": start_vals, 
+            "limits": limits, 
+            "maxiter": maxiter,
+            "tol": tolerance,
+            "strategy": strategy
+        })
         if res["error"] is not None:
             raise res["error"]
 
@@ -316,6 +353,10 @@ def fit_iminuit(
     # ------------------------------------------------------------------
     # Build per-resample fit arguments
     # ------------------------------------------------------------------
+
+    if central_value_fit:
+        start_vals = {k: v.mean for k,v in fit_result.params.items()}
+
     args = np.empty(Nres, dtype=object)
     if resample_fit_correlated:
         W = cov_inv
@@ -333,7 +374,14 @@ def fit_iminuit(
                 x_rs, y_rs, 1.0 / ordinate.serr, model, param_names, prior, has_grad
             )
 
-        args[nres] = {"least_square": least_square, "p0": start_vals, "limits": limits, "maxiter":maxiter}
+        args[nres] = {
+            "least_square": least_square, 
+            "p0": start_vals, 
+            "limits": limits, 
+            "maxiter":maxiter,
+            "tol": tolerance,
+            "strategy": strategy
+        }
 
     # ------------------------------------------------------------------
     # Execute resample fits (serial or parallel)

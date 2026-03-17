@@ -201,6 +201,10 @@ def fit_lsqfit(
     # Build per-resample fit arguments
     # ------------------------------------------------------------------
     args = np.empty(Nres, dtype=object)
+
+    if central_value_fit:
+        start_vals = {k: v.mean for k,v in fit_result.params.items()}
+
     for nres in range(Nres):
         x_rs = _get_abscissa(abscissa, nres)
 
