@@ -217,6 +217,15 @@ def _run_minuit_varproj(least_square, p0, limits=None, maxiter = 10_000):
             if key in minuit.parameters:
                 minuit.limits[key] = limit
 
+    # minuit stops if EDM < 0.002 × tol 
+    # where EDM is the estimated distance to the minimum (based on gradient and hessian)
+    # by default tol = 0.1 
+    # This typically means a chi^2 to converge to a minumum up to ~1e-4 if everything goes well
+    # The 1e-10 allows to converge to ~1e-12
+    # Note, that at this precision, the Hessian esitimate may become unstable rendering the
+    # convergence criterium wrong. 
+    # minuit.tol = 1e-10
+
     minuit.migrad(ncall=maxiter)
 
     # Resolve linear parameters at best-fit nonlinear values
