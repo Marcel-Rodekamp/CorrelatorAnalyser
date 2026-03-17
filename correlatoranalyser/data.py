@@ -1750,7 +1750,8 @@ class Data:
                 return Data.import_gvar(result, Ndata=ndata)
             return result
 
-        if gvar_modes and not all(gvar_modes):
+        if len(gvar_modes) > 1 and not all(gvar_modes):
+            print(gvar_modes)
             raise RuntimeError("Cannot mix gvar-mode and resample-mode Data in a numpy function")
 
         # ---- resample mode ----
