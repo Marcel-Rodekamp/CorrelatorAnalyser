@@ -119,7 +119,7 @@ def _build_hankel_matrix(C: np.ndarray, n: int) -> np.ndarray:
     return scipy_hankel(C[:n + 1], C[n: 2 * n + 1])
 
 
-def _build_default_Omega(sigma: np.ndarray, n: int, t0: int) -> np.ndarray:
+def _build_default_Omega(sigma: np.ndarray, n: int) -> np.ndarray:
     """
     Build the default inner weight matrix Omega (eq. 47, paper).
 
@@ -129,11 +129,13 @@ def _build_default_Omega(sigma: np.ndarray, n: int, t0: int) -> np.ndarray:
 
     where the multiplicity #(2i) = 1 + 2*min(i, n-i) (eq. 46) accounts
     for the fact that time slice 2i appears more than once in H_hat.
+
+    sigma must already be offset by t0 (i.e. pass sigma = full_sigma[t0:]).
     """
     omega_diag = np.empty(n + 1)
     for i in range(n + 1):
         mult          = 1 + 2 * min(i, n - i)   # eq. (46)
-        omega_diag[i] = 1.0 / np.sqrt(np.sqrt(mult) * sigma[t0 + 2 * i])
+        omega_diag[i] = 1.0 / np.sqrt(np.sqrt(mult) * sigma[2 * i])
     return np.diag(omega_diag)
 
 
@@ -141,7 +143,6 @@ def _build_default_W_outer(
     sigma: np.ndarray,
     n: int,
     delta_t: int,
-    t0: int,
     symmetric: bool,
 ) -> np.ndarray:
     """
@@ -151,14 +152,16 @@ def _build_default_W_outer(
 
     Non-symmetric (eq. 29/30):  W[i,i] = 1 / sqrt(sigma[t0 + delta_t + i])
     Symmetric     (eq. 33):     W[i,i] = sqrt(1/sigma^2[t0+i] + 1/sigma^2[t0+delta_t+i])
+
+    sigma must already be offset by t0 (i.e. pass sigma = full_sigma[t0:]).
     """
     n_rows = n - delta_t
     if symmetric:
-        s0  = sigma[t0:           t0 + n_rows]
-        sdt = sigma[t0 + delta_t: t0 + n_rows + delta_t]
+        s0  = sigma[:n_rows]
+        sdt = sigma[delta_t:n_rows + delta_t]
         w   = np.sqrt(1.0 / s0**2 + 1.0 / sdt**2)
     else:
-        w = 1.0 / np.sqrt(sigma[t0 + delta_t: t0 + n_rows + delta_t])
+        w = 1.0 / np.sqrt(sigma[delta_t: n_rows + delta_t])
     return np.diag(w)
 
 
@@ -166,7 +169,6 @@ def _hankel_eigh(
     C: np.ndarray,
     Omega: np.ndarray,
     n: int,
-    t0: int,
 ) -> tuple[np.ndarray, np.ndarray]:
     """
     Compute and sort the eigendecomposition of H_tilde = Omega * H_hat * Omega†.
@@ -179,8 +181,10 @@ def _hankel_eigh(
     -------
     eigenvalues  : np.ndarray, shape (n+1,)   real, sorted desc by |s|
     eigenvectors : np.ndarray, shape (n+1, n+1)
+
+    C must already be offset by t0 (i.e. pass C = full_C[t0:]).
     """
-    H_hat   = _build_hankel_matrix(C[t0:], n)
+    H_hat   = _build_hankel_matrix(C, n)
     H_tilde = Omega @ H_hat @ Omega.T
     eigenvalues, eigenvectors = np.linalg.eigh(H_tilde)   # real eigs
     idx          = np.argsort(np.abs(eigenvalues))[::-1]
@@ -191,7 +195,6 @@ def _determine_k(
     C: np.ndarray,
     Omega: np.ndarray,
     n: int,
-    t0: int,
     method: str,
 ) -> int:
     """
@@ -213,8 +216,11 @@ def _determine_k(
     -------
     int
         Resolved k, at least 1.
+
+
+    C must already be offset by t0 (i.e. pass C = full_C[t0:]).
     """
-    eigenvalues, _ = _hankel_eigh(C, Omega, n, t0)
+    eigenvalues, _ = _hankel_eigh(C, Omega, n)
 
     if method == "gap":
         abs_eigs = np.abs(eigenvalues)
@@ -243,7 +249,6 @@ def _thc_energies(
     delta_t: int,
     k: int,
     symmetric: bool,
-    t0: int,
 ) -> tuple[np.ndarray, np.ndarray]:
     """
     Algorithm 2 — extract raw energies from the truncated Hankel matrix.
@@ -260,8 +265,10 @@ def _thc_energies(
         E_l = -log(Lambda_l) / delta_t  before filtering.
     Lambda : np.ndarray (complex), shape (k,)
         Raw eigenvalues of X: Lambda_l ≈ exp(-E_l * delta_t).
+
+    C must already be offset by t0 (i.e. pass C = full_C[t0:]).
     """
-    eigenvalues, eigenvectors = _hankel_eigh(C, Omega, n, t0)
+    eigenvalues, eigenvectors = _hankel_eigh(C, Omega, n)
 
     k  = min(k, n + 1)
     Uk = eigenvectors[:, :k]    # (n+1, k)
@@ -314,10 +321,9 @@ def _filter_energies(
 
 def _thc_overlaps(
     C: np.ndarray,
+    t_fit: np.ndarray,
     sigma: np.ndarray,
     energies: np.ndarray,
-    t0: int,
-    T_total: int,
 ) -> np.ndarray:
     """
     Algorithm 3 — amplitude reconstruction via weighted least squares.
@@ -335,10 +341,9 @@ def _thc_overlaps(
     -------
     A : np.ndarray, shape (Nstates,)
         Amplitude coefficients A_l.
-    """
-    Nstates = len(energies)
-    t_fit   = np.arange(t0, T_total, dtype=float)
 
+    C,sigma,t_fit must already be offset by t0.
+    """
     # Vandermonde: chi[t,l] = exp(-E_l * t),  shape (T_total-t0, Nstates)
     chi = np.exp(-energies[None, :] * t_fit[:, None])
 
@@ -348,13 +353,15 @@ def _thc_overlaps(
     chi0       = chi * chi_D_inv[None, :]        # every column bounded by 1
 
     # Weighted normal equations W = diag(1/sigma^2)
-    w     = 1.0 / sigma[t0:]**2
+    w     = 1.0 / sigma**2
     A_mat = chi0.T @ (w[:, None] * chi0)         # (Nstates, Nstates)
-    b_vec = chi0.T @ (w * C[t0:])                # (Nstates,)
+    b_vec = chi0.T @ (w * C)                # (Nstates,)
 
     # A = chi_D^{-1} * solve(A_mat, b_vec)
     A = chi_D_inv * np.linalg.solve(A_mat, b_vec)
+
     return A
+    
 
 
 def _compute_chi2(
@@ -376,7 +383,7 @@ def _compute_chi2(
     params.update({f"A{k}": overlaps[k] for k in range(Nstates)})
     t0   = int(abscissa[0])
     pred = model(abscissa, params)
-    r    = C[t0:] - pred
+    r    = C - pred
     return float(r @ W_chi2 @ r)
 
 
@@ -385,6 +392,7 @@ def _run_one_thc(
     sigma: np.ndarray,
     Omega: np.ndarray,
     W_outer: np.ndarray,
+    t_fit:np.ndarray,
     n: int,
     delta_t: int,
     k: int,
@@ -392,8 +400,6 @@ def _run_one_thc(
     epsilon_real: float,
     epsilon_imag: float,
     Nstates: int,
-    t0: int,
-    T_total: int,
 ) -> dict:
     """
     Run Algorithms 2 + 3 for a single data vector.
@@ -411,11 +417,11 @@ def _run_one_thc(
         n_physical     - number of physical states found before padding
     """
     raw_E, Lambda = _thc_energies(
-        C, Omega, W_outer, n, delta_t, k, symmetric, t0,
+        C, Omega, W_outer, n, delta_t, k, symmetric, 
     )
     phys   = _filter_energies(raw_E, epsilon_real, epsilon_imag)
     n_phys = len(phys)
-    A      = _thc_overlaps(C, sigma, phys, t0, T_total) if n_phys > 0 else np.array([])
+    A      = _thc_overlaps(C, t_fit, sigma, phys) if n_phys > 0 else np.array([])
 
     # Pad / truncate physical results to exactly Nstates entries
     E_out = np.full(Nstates, np.nan)
@@ -442,6 +448,7 @@ def _thc_block(
     sigma: np.ndarray,
     Omega: np.ndarray,
     W_outer: np.ndarray,
+    t_fit:np.ndarray,
     n: int,
     delta_t: int,
     k: int,
@@ -449,15 +456,13 @@ def _thc_block(
     epsilon_real: float,
     epsilon_imag: float,
     Nstates: int,
-    t0: int,
-    T_total: int,
 ) -> list[tuple[int, dict]]:
     """Multiprocess worker: run a block of resample indices."""
     return [
         (nres, _run_one_thc(
-            rspl[nres], sigma, Omega, W_outer,
+            rspl[nres], sigma, Omega, W_outer, t_fit,
             n, delta_t, k, symmetric,
-            epsilon_real, epsilon_imag, Nstates, t0, T_total,
+            epsilon_real, epsilon_imag, Nstates,
         ))
         for nres in nres_list
     ]
@@ -479,7 +484,6 @@ def thc(
     delta_t: int = 1,
     truncation_dimension: int | None = None,
     truncation_method: str = "gap",
-    Nstates: int = 1,
     symmetric_correlator: bool = False,
     Omega: np.ndarray | None = None,
     W_outer: np.ndarray | None = None,
@@ -541,15 +545,6 @@ def thc(
             Can overestimate when noise modes fluctuate positive.  Useful as
             a cross-check on cleaner data.
 
-    Nstates : int
-        Number of states to store in FitResult.params.  If fewer physical
-        states survive the epsilon filter, remaining entries are np.nan
-        (errors estimated via nanstd over the resamples that did resolve the
-        state).
-
-        Physical results  (params):        E0, A0, E1, A1, ...
-        Algorithmic result (separate):     FitResult.lambda_eigs
-        (default: 1)
     symmetric_correlator : bool
         Use the symmetrised estimator (eq. 31) for C(t) = C(T-t).
         Guarantees the energy spectrum is symmetric about zero. (default: False)
@@ -582,7 +577,7 @@ def thc(
         raise ValueError("At least one of central_value_fit or resample_fit must be True.")
     if not isinstance(ordinate, Data):
         raise TypeError(f"ordinate must be a Data object, got {type(ordinate)}")
-    if truncation_method not in ("gap", "kpos"):
+    if truncation_method not in ("gap", "kpos", None):
         raise ValueError(
             f"truncation_method must be 'gap' or 'kpos', got '{truncation_method}'."
         )
@@ -599,6 +594,9 @@ def thc(
             f"T_eff = T_total - 1 - t0 = {T_eff} must be even. "
             f"Adjust t0 (currently {t0}) or the length of ordinate ({T_total})."
         )
+
+    if t0 != 0:
+        ordinate = ordinate[t0:]
 
     n = T_eff // 2   # Hankel matrix will be (n+1) x (n+1)
 
@@ -622,11 +620,11 @@ def thc(
     # --- Build weight matrices (user override or paper defaults) ---
     Omega_use   = (
         Omega   if Omega   is not None
-        else _build_default_Omega(sigma, n, t0)
+        else _build_default_Omega(sigma, n)
     )
     W_outer_use = (
         W_outer if W_outer is not None
-        else _build_default_W_outer(sigma, n, delta_t, t0, symmetric_correlator)
+        else _build_default_W_outer(sigma, n, delta_t, symmetric_correlator)
     )
 
     # --- Resolve truncation dimension k upfront from central-value data ---
@@ -634,8 +632,16 @@ def thc(
     # When None, k is determined once from the CV Hankel spectrum using the
     # selected criterion, then reused for every resample to guarantee a
     # consistent bootstrap ensemble (all resamples use the same model order).
-    if not isinstance(truncation_dimension, int):
-        truncation_dimension = _determine_k(ordinate.mean, Omega_use, n, t0, truncation_method)
+    if not isinstance(truncation_dimension, int) and truncation_method is None:
+        raise RuntimeError("THC requires eather tuncation_dimension:int or a method to determin it (truncation_method)")
+
+    elif not isinstance(truncation_dimension, int):
+        truncation_dimension = _determine_k(ordinate.mean, Omega_use, n, truncation_method)
+    else:
+        # ignore truncation method and use truncation_dimension
+        pass 
+
+    Nstates = truncation_dimension
 
     # Abscissa = timeslices actually used in chi2 evaluation
     abscissa = np.arange(t0, T_total, dtype=float)
@@ -661,9 +667,9 @@ def thc(
     if central_value_fit:
         W_cv   = _W_chi2(central_value_fit_correlated)
         cv_res = _run_one_thc(
-            ordinate.mean, sigma, Omega_use, W_outer_use,
+            ordinate.mean, sigma, Omega_use, W_outer_use, abscissa,
             n, delta_t, truncation_dimension, symmetric_correlator,
-            epsilon_real, epsilon_imag, Nstates, t0, T_total,
+            epsilon_real, epsilon_imag, Nstates,
         )
         chi2_cv = _compute_chi2(
             ordinate.mean, abscissa,
@@ -692,9 +698,9 @@ def thc(
         # Serial
         for nres in range(Nres):
             rs_res  = _run_one_thc(
-                ordinate.rspl[nres], sigma, Omega_use, W_outer_use,
+                ordinate.rspl[nres], sigma, Omega_use, W_outer_use, abscissa,
                 n, delta_t, truncation_dimension, symmetric_correlator,
-                epsilon_real, epsilon_imag, Nstates, t0, T_total,
+                epsilon_real, epsilon_imag, Nstates,
             )
             chi2_rs = _compute_chi2(
                 ordinate.rspl[nres], abscissa,
@@ -721,9 +727,9 @@ def thc(
             slices.append(list(range(Nproc * block_size, Nres)))
 
         inputs = [
-            (sl, ordinate.rspl, sigma, Omega_use, W_outer_use,
+            (sl, ordinate.rspl, sigma, Omega_use, W_outer_use, abscissa,
              n, delta_t, truncation_dimension, symmetric_correlator,
-             epsilon_real, epsilon_imag, Nstates, t0, T_total)
+             epsilon_real, epsilon_imag, Nstates)
             for sl in slices
         ]
 
