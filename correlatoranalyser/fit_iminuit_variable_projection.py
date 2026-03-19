@@ -8,7 +8,7 @@ from .data import Data
 from .prior import Prior
 from .fitResult import FitResult
 
-from .fit_helper import _validate_inputs, _get_p0, _get_abscissa, _compute_cov_inv
+from .fit_helper import _validate_inputs, _get_p0, _get_abscissa, _compute_cov_inv, _jacobian_fd
 
 # =============================================================================
 # Variable-projection cost function constructors
@@ -135,6 +135,7 @@ def _build_varproj_correlated_cost(abscissa, y_data, cov_inv, model, nonlinear_p
             Phi[:, j] = model(x, test)
         return LT @ Phi, Lty
 
+
     def _solve(A, b):
         try:
             return np.linalg.solve(A.T @ A, A.T @ b)
@@ -232,9 +233,56 @@ def _run_minuit_varproj(least_square, p0, limits=None, maxiter = 10_000, tol = 0
     best_nl = {p: minuit.values[p] for p in least_square._nonlinear_params}
     A, b    = least_square._design_matrix(best_nl)
     coeffs  = least_square._solve(A, b)
+    residual= b - A @ coeffs
     varproj = dict(zip(least_square._linear_params, coeffs))
 
-    return minuit, varproj
+    # We reevaluate the hessian form of the error here, as iminuit only
+    # knew about the non-linear subspace
+    linear_param_names = least_square._linear_params
+    nonlinear_param_names = least_square._nonlinear_params
+    cv = {}
+    cv.update(**best_nl)
+    cv.update(**varproj)
+    param_names = list(cv.keys())
+
+    AtA_inv = np.linalg.pinv(A.T @ A)
+    cov_non_linear = minuit.covariance  
+    
+    eps=1e-5
+    dalpha_dbeta = np.zeros( (len(linear_param_names), len(nonlinear_param_names)) )
+    for i, k in enumerate(nonlinear_param_names):
+        nl_up = best_nl.copy()
+        nl_dn = best_nl.copy()
+
+        nl_up[k] += eps
+        nl_dn[k] -= eps
+
+        A_up, _ = least_square._design_matrix(nl_up)
+        A_dn, _ = least_square._design_matrix(nl_dn)
+
+        dA = (A_up - A_dn) / (2 * eps)
+
+        dalpha_dbeta[:,i] = AtA_inv @ ( 
+            dA.T @ residual - (A.T @ (dA @ coeffs))
+        )
+
+    cov_alpha_total = (
+        AtA_inv
+        + dalpha_dbeta @ cov_non_linear @ dalpha_dbeta.T
+    )
+
+    errors_linear = np.sqrt(np.diag(cov_alpha_total))
+    errors_nonlinear = np.sqrt(np.diag(cov_non_linear))
+
+    varproj_hessian = {}
+    varproj_hessian.update({
+        key: error for key,error in zip(linear_param_names, errors_linear)
+    })
+    varproj_hessian.update({
+        key: error for key,error in zip(nonlinear_param_names, errors_nonlinear)
+    })
+
+    return minuit, varproj, varproj_hessian
 
 
 def _execute_fits(fit_args, nres=None):
@@ -244,9 +292,9 @@ def _execute_fits(fit_args, nres=None):
     Returns dict with keys 'nres', 'minuit', 'varproj', 'error'.
     """
     if nres is None:
-        out = {"nres": None, "minuit": None, "varproj": None, "error": None}
+        out = {"nres": None, "minuit": None, "varproj": None, "varproj_hessians": None, "error": None}
         try:
-            minuit, varproj = _run_minuit_varproj(
+            minuit, varproj, varproj_hessians = _run_minuit_varproj(
                 fit_args["least_square"],
                 fit_args["p0"],
                 fit_args.get("limits"),
@@ -256,15 +304,16 @@ def _execute_fits(fit_args, nres=None):
             )
             out["minuit"]  = minuit
             out["varproj"] = varproj
+            out["varproj_hessians"] = varproj_hessians
         except Exception as e:
             out["error"] = e
         return out
 
     n = len(nres)
-    out = {"nres": nres, "minuit": [None]*n, "varproj": [None]*n, "error": [None]*n}
+    out = {"nres": nres, "minuit": [None]*n, "varproj": [None]*n, "varproj_hessians": [None]*n, "error": [None]*n}
     for res_id in range(n):
         try:
-            minuit, varproj = _run_minuit_varproj(
+            minuit, varproj, varproj_hessians = _run_minuit_varproj(
                 fit_args[res_id]["least_square"],
                 fit_args[res_id]["p0"],
                 fit_args[res_id].get("limits"),
@@ -274,9 +323,40 @@ def _execute_fits(fit_args, nres=None):
             )
             out["minuit"][res_id]  = minuit
             out["varproj"][res_id] = varproj
+            out["varproj_hessians"][res_id] = varproj_hessians
         except Exception as e:
             out["error"][res_id] = e
     return out
+
+
+def _run_parallel_varproj(args, Nres, Nproc):
+    """
+    Like _run_parallel but also unpacks the varproj field.
+    Returns list of (nres, minuit, varproj, error).
+    """
+    blockSize = Nres // Nproc
+    Nrest     = Nres % Nproc
+
+    slices = [np.s_[b * blockSize : (b + 1) * blockSize] for b in range(Nproc)]
+    if Nrest:
+        slices.append(np.s_[Nproc * blockSize :])
+
+    inputs = [(args[sl], np.arange(Nres)[sl].tolist()) for sl in slices]
+
+    with mp.Pool(processes=Nproc) as pool:
+        results = pool.starmap(_execute_fits, inputs)
+
+    flat = []
+    for result in results:
+        for res_id, nres in enumerate(result["nres"]):
+            flat.append((
+                nres,
+                result["minuit"][res_id],
+                result["varproj"][res_id],
+                result["varproj_hessians"][res_id],
+                result["error"][res_id],
+            ))
+    return flat
 
 
 # =============================================================================
@@ -437,6 +517,7 @@ def fit_iminuit(
             minuit=res["minuit"], 
             model=model, 
             variable_projection=res["varproj"],
+            variable_projection_hessians=res["varproj_hessians"],
             prior=prior, 
             cov   = ordinate.cov,
             W     = W,
@@ -498,6 +579,7 @@ def fit_iminuit(
                 out["minuit"][nres], 
                 model=model, 
                 variable_projection=out["varproj"][nres],
+                variable_projection_hessians=out["varproj_hessians"][nres],
                 prior=prior, 
                 cov = ordinate.cov,
                 W = W,
@@ -506,17 +588,18 @@ def fit_iminuit(
             )
     else:
         # run using a wrapper that returns varproj too
-        flat_vp = _run_parallel_varproj(_execute_fits, args, Nres, Nproc)
-        errors  = [(nres, err) for nres, _, _, err in flat_vp if err is not None]
+        flat_vp = _run_parallel_varproj(args, Nres, Nproc)
+        errors  = [(nres, err) for nres, _, _, _, err in flat_vp if err is not None]
         if errors:
             for nres, err in errors:
                 print(f"Resample fit failed at nres={nres}: {err}")
             raise RuntimeError(f"{len(errors)} resample fit(s) failed.")
-        for nres, minuit, varproj, _ in flat_vp:
+        for nres, minuit, varproj, varproj_hessians, _ in flat_vp:
             fit_result.import_from_iminuit(
                 minuit, 
                 model=model, 
                 variable_projection=varproj,
+                variable_projection_hessians=varproj_hessians,
                 prior=prior, 
                 cov = ordinate.cov,
                 W = W,
@@ -525,32 +608,3 @@ def fit_iminuit(
             )
 
     return fit_result
-
-
-def _run_parallel_varproj(execute_fn, args, Nres, Nproc):
-    """
-    Like _run_parallel but also unpacks the varproj field.
-    Returns list of (nres, minuit, varproj, error).
-    """
-    blockSize = Nres // Nproc
-    Nrest     = Nres % Nproc
-
-    slices = [np.s_[b * blockSize : (b + 1) * blockSize] for b in range(Nproc)]
-    if Nrest:
-        slices.append(np.s_[Nproc * blockSize :])
-
-    inputs = [(args[sl], np.arange(Nres)[sl].tolist()) for sl in slices]
-
-    with mp.Pool(processes=Nproc) as pool:
-        results = pool.starmap(execute_fn, inputs)
-
-    flat = []
-    for result in results:
-        for res_id, nres in enumerate(result["nres"]):
-            flat.append((
-                nres,
-                result["minuit"][res_id],
-                result["varproj"][res_id],
-                result["error"][res_id],
-            ))
-    return flat

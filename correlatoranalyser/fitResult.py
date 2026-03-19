@@ -9,6 +9,7 @@ from typing import Any
 import h5py
 import numpy as np
 from scipy.special import gammaincc
+import gvar as gv
 
 from .data import Data
 from .prior import Prior
@@ -366,7 +367,12 @@ class FitResult:
     
         for key, p in self.params.items():
             prior_tag = f"  [{self.priors[key]}]" if key in self.priors else ""
-            lines.append(f"    {key}: {p.gvar()}{prior_tag}")
+
+            if self.has_resamples:
+                lines.append(f"    {key}: {p.gvar()}{prior_tag}")
+            else:
+                lines.append(f"    {key}: {gv.gvar(p.mean, self.params_hessian_err[key].mean)}{prior_tag}")
+
         return "\n".join(lines)
 
     # ------------------------------------------------------------------
@@ -565,7 +571,6 @@ class FitResult:
         """Write chi2, expected chi2 (defaults to dof), p-value, and AIC for a central-value or resample fit."""
         p_val = float(gammaincc(self.dof / 2.0, chi2 / 2.0))
         aic   = self._compute_AIC(chi2)
-        # expected_chi2 = self._compute_expected_chi2()
 
         if nres is None:
             if self.has_resamples:
@@ -607,19 +612,25 @@ class FitResult:
         self,
         cost_history: list[float],
         nres: int | None = None,
-    ):
+    ): 
+        r"""
+            import cost history of ADAM. 
+
+            Due to the stoppping criterion it is not guaranteed that all fits (resamples) have
+            a cost history of the same length. Therefore, we simply store a collection of the 
+            cost histories. 
+            These are stored as numpy arrays 
+        """
+        if not hasattr(self,"cost_history"):
+            self.cost_history = None
+            
+            if self.has_resamples:
+                self.cost_history_rspl = [None] * self.Nresample
+
         if nres is None:
-            # central value fit
-
-            if not hasattr(self,"cost_history"):
-                self.cost_history = cost_history
-            else:
-                raise RuntimeError(f"FitResult {self}, already hast cost_history")
+            self.cost_history = np.asarray(cost_history)           
         else:
-
-            if not hasattr(self,"cost_history_rspl"):
-                self.cost_history_rspl = [None] * self.Nresample 
-            self.cost_history_rspl[nres] = cost_history
+            self.cost_history_rspl[nres] = np.asarray(cost_history)
 
     def import_from_iminuit(
         self,
@@ -629,6 +640,7 @@ class FitResult:
         cov: np.ndarray | None = None,
         W: np.ndarray | None = None,
         variable_projection: dict[str, float] | None = None,
+        variable_projection_hessians: dict[str, float] | None = None,
         prior: dict[str, Prior] | None = None,
         nres: int | None = None,
     ) -> None:
@@ -672,20 +684,6 @@ class FitResult:
             else:
                 self.params[key].rspl[nres] = param.value
 
-        # --- Hessian (propagated) errors from Minuit ---
-        # minuit.valid is True only after a successful migrad; errors are
-        # meaningful only after hesse() has been called (or migrad has
-        # estimated them).  We store them unconditionally and let the user
-        # decide whether to trust them.
-        for param in minuit.params:
-            key = param.name
-            if param.error is not None:
-                self._ensure_hessian_err(key)
-                if nres is None:
-                    self.params_hessian_err[key].mean = param.error
-                else:
-                    self.params_hessian_err[key].rspl[nres] = param.error
-
         # --- variable-projection linear parameters ---
         if variable_projection is not None:
             for key, value in variable_projection.items():
@@ -695,6 +693,27 @@ class FitResult:
                 else:
                     self.params[key].rspl[nres] = value
 
+        # --- Hessian (propagated) errors from Minuit / Recomputed ---
+        minuit.hesse()
+        if variable_projection_hessians:
+            for key,error in variable_projection_hessians.items():
+                self._ensure_hessian_err(key)
+                if nres is None:
+                    self.params_hessian_err[key].mean = error
+                else:
+                    self.params_hessian_err[key].rspl[nres] = error
+
+        else:
+            # the hessian errors are compute within iminuit. we can just
+            # import them:
+            for param in minuit.params:
+                key = param.name
+                self._ensure_hessian_err(key)
+                if nres is None:
+                    self.params_hessian_err[key].mean = param.error
+                else:
+                    self.params_hessian_err[key].rspl[nres] = param.error
+
         # --- priors (central-value fit only) ---
         if nres is None and prior is not None:
             for key, p in prior.items():
@@ -703,7 +722,7 @@ class FitResult:
         if cov is not None and W is not None:
             cv = {
                 k: self.params[k].mean if nres is None else self.params[k].rspl[nres]
-                  for k in self.params
+                for k in self.params
             }
 
             J  = (model.grad(self.abscissa, cv) if hasattr(model, "grad") else _jacobian_fd(model, self.abscissa, cv))
@@ -711,7 +730,7 @@ class FitResult:
             exp_chi2 = self.compute_expected_chi2(
                 cov, W, J, Npriors=len(prior) if prior else 0
             )
-        else: 
+        else:
             exp_chi2 = self.dof
 
         # --- fit quality ---

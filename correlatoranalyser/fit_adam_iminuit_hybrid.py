@@ -3,7 +3,6 @@ from __future__ import annotations
 from collections.abc import Callable
 
 import numpy as np
-import iminuit
 import multiprocess as mp
 
 from .data import Data
@@ -17,7 +16,6 @@ from .fit_iminuit import (
     _build_uncorrelated_cost,
     _build_correlated_cost,
     _run_minuit,
-    _run_parallel,
 )
 
 # Cost-function builders and executor — variable-projection path
@@ -25,8 +23,6 @@ from .fit_iminuit_variable_projection import (
     _build_varproj_uncorrelated_cost,
     _build_varproj_correlated_cost,
     _run_minuit_varproj,
-    _execute_fits as _execute_fits_varproj,
-    _run_parallel_varproj,
 )
 
 # =============================================================================
@@ -156,7 +152,7 @@ def _run_adam(
             window = chi2_history[-(length + 1):]
             
             # Maximum relative change between consecutive values in the window.
-            total_improvement = (window[0] - window[-1]) / max(abs(window[0]), 1e-300)
+            total_improvement = abs(window[0] - window[-1]) / max(abs(window[0]), 1e-300)
             if total_improvement < precision:
                 break
 
@@ -182,7 +178,7 @@ def _run_adam_then_minuit(fit_args: dict) -> dict:
     -------
     dict with keys ``minuit`` and ``error``.
     """
-    out = {"minuit": None, "error": None}
+    out = {"minuit": None, "adam_chi2_history":None, "error": None}
     try:
         cost        = fit_args["least_square"]
         param_names = fit_args["param_names"]
@@ -207,13 +203,10 @@ def _run_adam_then_minuit(fit_args: dict) -> dict:
 
         p0_iminuit = dict(zip(param_names, theta_best))
         out["minuit"] = _run_minuit(cost, p0_iminuit, limits, maxiter, fit_args["tol"], fit_args["strategy"])
-        out["adam"] = {
-            "cost_history": cost_hisory
-        }
+        out["adam_chi2_history"] = cost_hisory
     except Exception as e:
         out["error"] = e
     return out
-
 
 def _execute_fits_plain(fit_args, nres=None):
     """
@@ -223,15 +216,55 @@ def _execute_fits_plain(fit_args, nres=None):
     """
     if nres is None:
         result = _run_adam_then_minuit(fit_args)
-        return {"nres": None, "minuit": result["minuit"], "error": result["error"]}
+        return {
+            "nres": None, 
+            "minuit": result["minuit"], 
+            "adam_chi2_history": result["adam_chi2_history"],
+            "error": result["error"]
+        }
 
     n   = len(nres)
-    out = {"nres": nres, "minuit": [None] * n, "error": [None] * n}
+    out = {"nres": nres, "minuit": [None] * n, "adam_chi2_history": [None] * n, "error": [None] * n}
     for res_id in range(n):
         result = _run_adam_then_minuit(fit_args[res_id])
         out["minuit"][res_id] = result["minuit"]
+        out["adam_chi2_history"][res_id] = result["adam_chi2_history"]
         out["error"][res_id]  = result["error"]
     return out
+
+def _execute_parallel_plain(args, Nres, Nproc):
+    """
+    Split resample fits across Nproc workers and collect results.
+
+    Returns a flat list of (nres, minuit_or_none, error_or_none) tuples.
+    """
+    blockSize = Nres // Nproc
+    Nrest     = Nres % Nproc
+
+    slices = [np.s_[b * blockSize : (b + 1) * blockSize] for b in range(Nproc)]
+    if Nrest:
+        slices.append(np.s_[Nproc * blockSize :])
+
+    inputs = [
+        (args[sl], np.arange(Nres)[sl].tolist())
+        for sl in slices
+    ]
+
+    with mp.Pool(processes=Nproc) as pool:
+        results = pool.starmap(_execute_fits_plain, inputs)
+
+    flat = []
+    for result in results:
+        for res_id, nres in enumerate(result["nres"]):
+            flat.append((
+                nres, 
+                result["minuit"][res_id], 
+                result["adam_chi2_history"][res_id],
+                result["error"][res_id],
+            ))
+
+    return flat
+
 
 
 # =============================================================================
@@ -255,7 +288,7 @@ def _run_adam_then_minuit_varproj(fit_args: dict) -> dict:
     -------
     dict with keys ``minuit``, ``varproj``, ``error``.
     """
-    out = {"minuit": None, "varproj": None, "error": None}
+    out = {"minuit": None, "varproj": None, "varproj_hessians":None, "adam_chi2_history": None, "error": None}
     try:
         cost        = fit_args["least_square"]
         param_names = cost._nonlinear_params   # only the nonlinear names
@@ -267,7 +300,7 @@ def _run_adam_then_minuit_varproj(fit_args: dict) -> dict:
         nl_p0_dict = {k: p0_dict[k] for k in param_names if k in p0_dict}
         theta0     = np.array([nl_p0_dict[k] for k in param_names], dtype=float)
 
-        theta_best, _ = _run_adam(
+        theta_best, chi2_history = _run_adam(
             cost        = cost,
             theta0      = theta0,
             alpha       = fit_args["adam_alpha"],
@@ -281,13 +314,14 @@ def _run_adam_then_minuit_varproj(fit_args: dict) -> dict:
         )
 
         p0_iminuit = dict(zip(param_names, theta_best))
-        minuit, varproj = _run_minuit_varproj(cost, p0_iminuit, limits, maxiter, fit_args["tol"], fit_args["strategy"])
+        minuit, varproj, varproj_hessians = _run_minuit_varproj(cost, p0_iminuit, limits, maxiter, fit_args["tol"], fit_args["strategy"])
         out["minuit"]  = minuit
         out["varproj"] = varproj
+        out["varproj_hessians"] = varproj_hessians
+        out["adam_chi2_history"] = chi2_history
     except Exception as e:
         out["error"] = e
     return out
-
 
 def _execute_fits_vp(fit_args, nres=None):
     """
@@ -303,7 +337,9 @@ def _execute_fits_vp(fit_args, nres=None):
             "nres":    None,
             "minuit":  result["minuit"],
             "varproj": result["varproj"],
+            "varproj_hessians": result["varproj_hessians"],
             "error":   result["error"],
+            "adam_chi2_history": result["adam_chi2_history"]
         }
 
     n   = len(nres)
@@ -311,15 +347,48 @@ def _execute_fits_vp(fit_args, nres=None):
         "nres":    nres,
         "minuit":  [None] * n,
         "varproj": [None] * n,
+        "varproj_hessians": [None] * n,
+        "adam_chi2_history": [None] * n,
         "error":   [None] * n,
     }
     for res_id in range(n):
         result = _run_adam_then_minuit_varproj(fit_args[res_id])
         out["minuit"][res_id]  = result["minuit"]
         out["varproj"][res_id] = result["varproj"]
+        out["varproj_hessians"][res_id] = result["varproj_hessians"]
+        out["adam_chi2_history"][res_id]   = result["adam_chi2_history"]
         out["error"][res_id]   = result["error"]
     return out
 
+def _execute_parallel_varproj(args, Nres, Nproc):
+    """
+    Like _run_parallel but also unpacks the varproj field.
+    Returns list of (nres, minuit, varproj, error).
+    """
+    blockSize = Nres // Nproc
+    Nrest     = Nres % Nproc
+
+    slices = [np.s_[b * blockSize : (b + 1) * blockSize] for b in range(Nproc)]
+    if Nrest:
+        slices.append(np.s_[Nproc * blockSize :])
+
+    inputs = [(args[sl], np.arange(Nres)[sl].tolist()) for sl in slices]
+
+    with mp.Pool(processes=Nproc) as pool:
+        results = pool.starmap(_execute_fits_vp, inputs)
+
+    flat = []
+    for result in results:
+        for res_id, nres in enumerate(result["nres"]):
+            flat.append((
+                nres,
+                result["minuit"][res_id],
+                result["varproj"][res_id],
+                result["varproj_hessians"][res_id],
+                result["adam_chi2_history"][res_id],
+                result["error"][res_id],
+            ))
+    return flat
 
 # =============================================================================
 # Public interface
@@ -565,16 +634,23 @@ def fit_adam_iminuit_hybrid(
             raise res["error"]
 
         if use_varproj:
+            fit_result.import_from_adam(
+                cost_history=res["adam_chi2_history"]
+            )
             fit_result.import_from_iminuit(
                 minuit              = res["minuit"],
                 model               = model,
                 variable_projection = res["varproj"],
+                variable_projection_hessians = res["varproj_hessians"],
                 prior               = prior,
                 cov = ordinate.cov,
                 W = W,
                 Ndata               = Ndata,
             )
         else:
+            fit_result.import_from_adam(
+                cost_history=res["adam_chi2_history"]
+            )
             fit_result.import_from_iminuit(
                 minuit = res["minuit"],
                 model  = model,
@@ -603,6 +679,7 @@ def fit_adam_iminuit_hybrid(
         W = cov_inv
     else:
         W = np.diag(1/ordinate.serr**2)
+
     for nres in range(Nres):
         x_rs = _get_abscissa(abscissa, nres)
         y_rs = ordinate.rspl[nres]
@@ -634,10 +711,15 @@ def fit_adam_iminuit_hybrid(
                 nres, err = errors[0]
                 raise RuntimeError(f"Resample fit failed at nres={nres}: {err}") from err
             for nres in range(Nres):
+                fit_result.import_from_adam(
+                    cost_history = out["adam_chi2_history"][nres],
+                    nres = nres
+                )
                 fit_result.import_from_iminuit(
                     out["minuit"][nres],
                     model               = model,
                     variable_projection = out["varproj"][nres],
+                    variable_projection_hessians = out["varproj_hessians"][nres],
                     prior               = prior,
                     Ndata               = Ndata,
                     cov                 = ordinate.cov,
@@ -653,6 +735,10 @@ def fit_adam_iminuit_hybrid(
                 nres, err = errors[0]
                 raise RuntimeError(f"Resample fit failed at nres={nres}: {err}") from err
             for nres in range(Nres):
+                fit_result.import_from_adam(
+                    cost_history = out["adam_chi2_history"][nres],
+                    nres = nres
+                )
                 fit_result.import_from_iminuit(
                     out["minuit"][nres],
                     model  = model,
@@ -663,25 +749,27 @@ def fit_adam_iminuit_hybrid(
                     nres   = nres,
                 )
 
-        # for nres in range(Nres):
-        #     fit_result.import_from_adam(
-        #         cost_history = out["adam"][nres]["cost_history"],
-        #         nres = nres
-        #     )
     else:
         # Parallel path — reuse the same parallel helpers as the plain backends.
         if use_varproj:
-            flat_vp = _run_parallel_varproj(_execute_fits_vp, args, Nres, Nproc)
-            errors  = [(nres, err) for nres, _, _, err in flat_vp if err is not None]
+            flat_vp = _execute_parallel_varproj(args, Nres, Nproc)
+            errors  = [(nres, err) for nres, _, _, _, _, err in flat_vp if err is not None]
+
             if errors:
                 for nres, err in errors:
                     print(f"Resample fit failed at nres={nres}: {err}")
                 raise RuntimeError(f"{len(errors)} resample fit(s) failed.")
-            for nres, minuit, varproj, _ in flat_vp:
+
+            for nres, minuit, varproj, varproj_hessians, adam, _ in flat_vp:
+                fit_result.import_from_adam(
+                    cost_history = adam,
+                    nres = nres
+                )
                 fit_result.import_from_iminuit(
                     minuit,
                     model               = model,
                     variable_projection = varproj,
+                    variable_projection_hessians = varproj_hessians,
                     prior               = prior,
                     cov    = ordinate.cov,
                     W      = W,
@@ -689,13 +777,19 @@ def fit_adam_iminuit_hybrid(
                     nres                = nres,
                 )
         else:
-            flat = _run_parallel(_execute_fits_plain, args, Nres, Nproc)
-            errors = [(nres, err) for nres, _, err in flat if err is not None]
+            flat = _execute_parallel_plain(args, Nres, Nproc)
+            errors = [(nres, err) for nres, _, _, err in flat if err is not None]
+
             if errors:
                 for nres, err in errors:
                     print(f"Resample fit failed at nres={nres}: {err}")
                 raise RuntimeError(f"{len(errors)} resample fit(s) failed.")
-            for nres, minuit, _ in flat:
+            
+            for nres, minuit, adam, _ in flat:
+                fit_result.import_from_adam(
+                    cost_history = adam,
+                    nres = nres
+                )
                 fit_result.import_from_iminuit(
                     minuit,
                     model  = model,

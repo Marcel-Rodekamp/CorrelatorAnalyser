@@ -201,15 +201,9 @@ def _check_params_recovered(
             estimate    = fit_result.params[key].mean if central_value_fit else float(np.mean(rspl_vals))
             uncertainty = np.std(rspl_vals, ddof=1)
         else:
-            if key in fit_result.params_hessian_err:
-                estimate    = fit_result.params[key].mean
-                uncertainty = fit_result.params_hessian_err[key].mean
-            else:
-                # Linear parameter: fall back to 5 % of true value.
-                estimate    = fit_result.params[key].mean
-                uncertainty = abs(true_val) * 0.05
-                assert uncertainty > 0
-
+            estimate    = fit_result.params[key].mean
+            uncertainty = fit_result.params_hessian_err[key].mean
+            
         assert uncertainty > 0, f"Uncertainty for '{key}' is non-positive: {uncertainty}"
         deviation = abs(estimate - true_val)
         assert deviation < nsig * uncertainty, (

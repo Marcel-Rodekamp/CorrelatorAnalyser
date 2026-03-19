@@ -180,16 +180,9 @@ def _check_params_recovered(
             # available for nonlinear parameters (Minuit only tracks those);
             # for linear parameters we fall back to checking the CV value
             # against a generous absolute tolerance derived from the noise level.
-            if key in fit_result.params_hessian_err:
-                estimate    = fit_result.params[key].mean
-                uncertainty = fit_result.params_hessian_err[key].mean
-            else:
-                # Linear parameter: no Hessian error available.
-                # Use 5 % of the true value as a generous tolerance.
-                estimate    = fit_result.params[key].mean
-                uncertainty = abs(true_val) * 0.05
-                assert uncertainty > 0, f"Fallback uncertainty for '{key}' is zero"
-
+            estimate    = fit_result.params[key].mean
+            uncertainty = fit_result.params_hessian_err[key].mean
+            
         assert uncertainty > 0, f"Uncertainty for '{key}' is non-positive: {uncertainty}"
         deviation = abs(estimate - true_val)
         assert deviation < nsig * uncertainty, (
