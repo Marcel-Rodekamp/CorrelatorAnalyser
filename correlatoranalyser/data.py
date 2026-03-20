@@ -1675,9 +1675,12 @@ class Data:
             raise RuntimeError(f"All Nresamples must be the same, but found: {Nresamples}")
         Nresample: int = Nresamples[0]
 
-        if len(Ndatas) != 1:
-            raise RuntimeError(f"All Ndatas must be the same, but found: {Ndatas}")
-        Ndata: int = Ndatas[0]
+        if len(Ndatas) != 0:
+            if len(Ndatas) != 1:
+                raise RuntimeError(f"All Ndatas must be the same, but found: {Ndatas}")
+            Ndata: int = Ndatas[0]
+        else:
+            Ndata = None
 
         if len(rwf_candidates) == 0:
             rwf_rspl = None
