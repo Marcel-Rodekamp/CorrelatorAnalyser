@@ -81,7 +81,6 @@ fit_result = fit(
     delta_t                      = 1,
     truncation_dimension         = None,
     truncation_method            = "gap",
-    Nstates                      = 2,
     symmetric_correlator         = False,
     epsilon_real                 = 1e-8,
     epsilon_imag                 = 1e-8,
