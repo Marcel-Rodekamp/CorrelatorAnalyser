@@ -14,6 +14,8 @@ For both the linear model and the single-exponential model:
   B4  hybrid adam+iminuit
   B5  hybrid adam+iminuit + varproj
 
+For a single exponential we check thc agains B1-B5
+
 Tolerance design
 ----------------
 MIGRAD stops when the estimated distance to minimum (EDM) satisfies
@@ -66,6 +68,7 @@ from correlatoranalyser.fit_lsqfit   import fit_lsqfit
 from correlatoranalyser.fit_iminuit  import fit_iminuit
 from correlatoranalyser.fit_iminuit_variable_projection import fit_iminuit as fit_varproj
 from correlatoranalyser.fit_adam_iminuit_hybrid import fit_adam_iminuit_hybrid
+from correlatoranalyser.thc import thc
 
 # =============================================================================
 # Tolerance constants
@@ -73,6 +76,7 @@ from correlatoranalyser.fit_adam_iminuit_hybrid import fit_adam_iminuit_hybrid
 
 ATOL_IMINUIT: float = 2e-4   # iminuit-family vs iminuit-family
 ATOL_LSQFIT:  float = 2e-4   # lsqfit vs iminuit (different algorithm)
+ATOL_THC:     float = 5 * 0.02 # 5 * SINGLE_NOISE
 
 # =============================================================================
 # Ground-truth parameters
@@ -133,6 +137,24 @@ def single_exp_ordinate():
     return t, _make_data(true_C, SINGLE_NOISE)
 
 
+@pytest.fixture(scope="module")
+def thc_ordinate():
+    """
+    21-timeslice single-exponential data: t = 0, 1, ..., 20.
+ 
+    T_total=21, T_eff=20 (even), n=10.  Same physics and noise as the
+    existing ``single_exp_ordinate`` fixture, but starting at t=0 so that
+    T_eff is even (THC requirement).  Same seed as the rest of the file.
+    """
+    t      = np.arange(0, 21, dtype=float)
+    true_C = SINGLE_A * np.exp(-SINGLE_E * t)
+    n      = len(true_C)
+    cov    = SINGLE_NOISE ** 2 * (np.eye(n) + 0.1 * np.ones((n, n)))
+    raw    = np.random.default_rng(_RNG_SEED).multivariate_normal(
+        mean=true_C, cov=cov, size=600
+    )
+    return t, Data(resample_type="bst", data=raw, Nresample=200)
+
 # =============================================================================
 # Model functions (module-level for dill serialisation in parallel workers)
 # =============================================================================
@@ -179,6 +201,19 @@ FIT_STRATEGIES = [
 ]
 _IDS    = [s[0] for s in FIT_STRATEGIES]
 _PARAMS = [s[1:] for s in FIT_STRATEGIES]
+
+# Strategy matrix for the THC class
+_THC_STRATEGIES = [
+    # id              cv     cv_c   rs     rs_c
+    ("cv_uncorr",    True,  False, False, False),
+    ("cv_corr",      True,  True,  False, False),
+    ("rs_uncorr",    False, False, True,  False),
+    ("rs_corr",      False, False, True,  True ),
+    ("both_uncorr",  True,  False, True,  False),
+    ("both_corr",    True,  True,  True,  True ),
+]
+_THC_IDS    = [s[0] for s in _THC_STRATEGIES]
+_THC_PARAMS = [s[1:] for s in _THC_STRATEGIES]
 
 
 # =============================================================================
@@ -229,6 +264,43 @@ def _assert_params_equal(ref, other, atol: float, label: str) -> None:
                     atol=atol, rtol=0,
                     err_msg=f"{label}: rspl[{k}] mismatch for '{key}'",
                 )
+
+
+def _compare_thc_vs_minimiser(
+    thc_result,
+    min_result,
+    thc_key: str,
+    min_key: str,
+    label: str,
+    cv: bool,
+    rs: bool,
+) -> None:
+    """
+    Compare a single parameter between a THC result and a minimising backend.
+ 
+    CV means are compared directly.  For resample fits, ensemble means
+    (nanmean of THC rspl vs mean of iminuit rspl) are compared.
+    Per-resample comparison is intentionally omitted.
+    """
+    if cv:
+        np.testing.assert_allclose(
+            thc_result.params[thc_key].mean,
+            min_result.params[min_key].mean,
+            atol=ATOL_THC, rtol=0,
+            err_msg=f"{label}: CV mean mismatch '{thc_key}' vs '{min_key}'",
+        )
+ 
+    if rs:
+        thc_rs_mean = float(np.nanmean(thc_result.params[thc_key].rspl))
+        min_rs_mean = float(np.mean(min_result.params[min_key].rspl))
+        np.testing.assert_allclose(
+            thc_rs_mean, min_rs_mean,
+            atol=ATOL_THC, rtol=0,
+            err_msg=(
+                f"{label}: resample-mean mismatch '{thc_key}' vs '{min_key}': "
+                f"THC={thc_rs_mean:.6g}, minimiser={min_rs_mean:.6g}"
+            ),
+        )
 
 
 def _compare(ref, other, atol: float, label: str) -> None:
@@ -443,5 +515,216 @@ class TestConsistencySingleExp:
             model_single_exp.grad = _grad_single_exp
         _compare(plain, vp, atol=ATOL_IMINUIT, label="hybrid vs hybrid+varproj [single-exp]")
 
+# =============================================================================
+# 3. Cross-backend - THC - consistency — single-exponential model
+# =============================================================================
 
-
+class TestConsistencyTHC:
+    """
+    Compare THC against iminuit for C(t) = A·exp(-E·t).
+ 
+    THC (algebraic Hankel approach) and iminuit (chi² minimisation) are two
+    statistically consistent estimators of the same physical parameters.
+    Agreement is verified at ATOL_THC rather than ATOL_IMINUIT because the
+    two algorithms have different per-sample behaviour.
+ 
+    Tests
+    -----
+    * Energy and amplitude CV means agree within ATOL_THC.
+    * Resample ensemble means agree within ATOL_THC.
+    * THC parameters are invariant to the correlated/uncorrelated chi² flag
+      (that flag only affects the post-hoc chi² computation, not the Hankel
+      eigenvalue solution).
+    * Standalone truth-recovery checks for E and A.
+    """
+ 
+    _p0     = {"A": SINGLE_A * 0.10, "E": SINGLE_E * 0.10}
+    _limits = {"E": (0.0, None)}
+ 
+    def _thc(self, ordinate, cv, cv_corr, rs, rs_corr):
+        return thc(
+            ordinate                     = ordinate,
+            central_value_fit            = cv,
+            central_value_fit_correlated = cv_corr,
+            resample_fit                 = rs,
+            resample_fit_correlated      = rs_corr,
+            truncation_dimension         = 1,
+        )
+ 
+    def _iminuit(self, t, ordinate, cv, cv_corr, rs, rs_corr):
+        return fit_iminuit(
+            abscissa                     = t,
+            ordinate                     = ordinate,
+            central_value_fit            = cv,
+            central_value_fit_correlated = cv_corr,
+            resample_fit                 = rs,
+            resample_fit_correlated      = rs_corr,
+            model                        = model_single_exp,
+            p0                           = self._p0,
+            limits                       = self._limits,
+        )
+ 
+    def _lsqfit(self, t, ordinate, cv, cv_corr, rs, rs_corr):
+        return fit_lsqfit(
+            abscissa                     = t,
+            ordinate                     = ordinate,
+            central_value_fit            = cv,
+            central_value_fit_correlated = cv_corr,
+            resample_fit                 = rs,
+            resample_fit_correlated      = rs_corr,
+            model                        = model_single_exp,
+            p0                           = self._p0,
+        )
+ 
+    @pytest.mark.parametrize("cv, cv_corr, rs, rs_corr", _THC_PARAMS, ids=_THC_IDS)
+    def test_thc_vs_iminuit_energy(self, thc_ordinate, cv, cv_corr, rs, rs_corr):
+        """Ground-state energy E0 (THC) must agree with E (iminuit) within ATOL_THC."""
+        t, ordinate = thc_ordinate
+        thc_res = self._thc(ordinate, cv, cv_corr, rs, rs_corr)
+        min_res = self._iminuit(t, ordinate, cv, cv_corr, rs, rs_corr)
+        _compare_thc_vs_minimiser(
+            thc_res, min_res, "E0", "E",
+            label=f"energy [thc vs iminuit, {cv=}, {rs=}]",
+            cv=cv, rs=rs,
+        )
+ 
+    @pytest.mark.parametrize("cv, cv_corr, rs, rs_corr", _THC_PARAMS, ids=_THC_IDS)
+    def test_thc_vs_iminuit_amplitude(self, thc_ordinate, cv, cv_corr, rs, rs_corr):
+        """Amplitude A0 (THC) must agree with A (iminuit) within ATOL_THC."""
+        t, ordinate = thc_ordinate
+        thc_res = self._thc(ordinate, cv, cv_corr, rs, rs_corr)
+        min_res = self._iminuit(t, ordinate, cv, cv_corr, rs, rs_corr)
+        _compare_thc_vs_minimiser(
+            thc_res, min_res, "A0", "A",
+            label=f"amplitude [thc vs iminuit, {cv=}, {rs=}]",
+            cv=cv, rs=rs,
+        )
+ 
+    @pytest.mark.parametrize("cv, cv_corr, rs, rs_corr", _THC_PARAMS, ids=_THC_IDS)
+    def test_thc_params_invariant_to_chi2_weight(
+        self, thc_ordinate, cv, cv_corr, rs, rs_corr
+    ):
+        """
+        Switching between correlated and uncorrelated chi² weight in THC must
+        not change the extracted parameters — only the post-hoc chi² value.
+ 
+        The uncorrelated result is used as reference; the correlated result
+        must be bit-for-bit identical in params (same Hankel solve, different W).
+        """
+        _, ordinate = thc_ordinate
+ 
+        uncorr = thc(
+            ordinate             = ordinate,
+            central_value_fit    = cv,
+            resample_fit         = rs,
+            truncation_dimension = 1,
+            # both correlated flags off
+            central_value_fit_correlated = False,
+            resample_fit_correlated      = False,
+        )
+        corr = self._thc(ordinate, cv, cv_corr, rs, rs_corr)
+ 
+        for key in ("E0", "A0"):
+            if cv:
+                np.testing.assert_array_equal(
+                    uncorr.params[key].mean, corr.params[key].mean,
+                    err_msg=(
+                        f"CV mean for '{key}' changed between uncorrelated and "
+                        f"correlated THC — correlated flags must not affect the "
+                        f"Hankel eigenvalue solve"
+                    ),
+                )
+            if rs:
+                np.testing.assert_array_equal(
+                    uncorr.params[key].rspl, corr.params[key].rspl,
+                    err_msg=f"rspl for '{key}' changed between uncorr and corr THC",
+                )
+ 
+    def test_thc_energy_close_to_truth(self, thc_ordinate):
+        """THC CV energy must lie within ATOL_THC of SINGLE_E = 0.3."""
+        _, ordinate = thc_ordinate
+        result = thc(ordinate=ordinate, truncation_dimension=1)
+        assert abs(result.params["E0"].mean - SINGLE_E) < ATOL_THC, (
+            f"THC E0={result.params['E0'].mean:.6g} deviates more than "
+            f"ATOL_THC={ATOL_THC:.3g} from true E={SINGLE_E}"
+        )
+ 
+    def test_thc_amplitude_close_to_truth(self, thc_ordinate):
+        """THC CV amplitude must lie within ATOL_THC of SINGLE_A = 1.5."""
+        _, ordinate = thc_ordinate
+        result = thc(ordinate=ordinate, truncation_dimension=1)
+        assert abs(result.params["A0"].mean - SINGLE_A) < ATOL_THC, (
+            f"THC A0={result.params['A0'].mean:.6g} deviates more than "
+            f"ATOL_THC={ATOL_THC:.3g} from true A={SINGLE_A}"
+        )
+ 
+    @pytest.mark.parametrize("cv, cv_corr, rs, rs_corr", _THC_PARAMS, ids=_THC_IDS)
+    def test_thc_vs_lsqfit_energy(self, thc_ordinate, cv, cv_corr, rs, rs_corr):
+        """Ground-state energy E0 (THC) must agree with E (lsqfit) within ATOL_THC."""
+        t, ordinate = thc_ordinate
+        thc_res = self._thc(ordinate, cv, cv_corr, rs, rs_corr)
+        lsq_res = self._lsqfit(t, ordinate, cv, cv_corr, rs, rs_corr)
+        _compare_thc_vs_minimiser(
+            thc_res, lsq_res, "E0", "E",
+            label=f"energy [thc vs lsqfit, {cv=}, {rs=}]",
+            cv=cv, rs=rs,
+        )
+ 
+    @pytest.mark.parametrize("cv, cv_corr, rs, rs_corr", _THC_PARAMS, ids=_THC_IDS)
+    def test_thc_vs_lsqfit_amplitude(self, thc_ordinate, cv, cv_corr, rs, rs_corr):
+        """Amplitude A0 (THC) must agree with A (lsqfit) within ATOL_THC."""
+        t, ordinate = thc_ordinate
+        thc_res = self._thc(ordinate, cv, cv_corr, rs, rs_corr)
+        lsq_res = self._lsqfit(t, ordinate, cv, cv_corr, rs, rs_corr)
+        _compare_thc_vs_minimiser(
+            thc_res, lsq_res, "A0", "A",
+            label=f"amplitude [thc vs lsqfit, {cv=}, {rs=}]",
+            cv=cv, rs=rs,
+        )
+ 
+    def test_thc_resample_energy_close_to_iminuit(self, thc_ordinate):
+        """
+        Single combined test: resample-mean energy and amplitude from THC must
+        agree with both iminuit and lsqfit for the both_uncorr strategy.  This
+        is the most complete single integration test that covers CV + resample
+        behaviour and cross-validates all three backends simultaneously.
+        """
+        t, ordinate = thc_ordinate
+        thc_res = thc(
+            ordinate             = ordinate,
+            central_value_fit    = True,
+            resample_fit         = True,
+            truncation_dimension = 1,
+        )
+        min_res = fit_iminuit(
+            abscissa          = t,
+            ordinate          = ordinate,
+            central_value_fit = True,
+            resample_fit      = True,
+            model             = model_single_exp,
+            p0                = self._p0,
+            limits            = self._limits,
+        )
+        lsq_res = fit_lsqfit(
+            abscissa          = t,
+            ordinate          = ordinate,
+            central_value_fit = True,
+            resample_fit      = True,
+            model             = model_single_exp,
+            p0                = self._p0,
+        )
+ 
+        for key_thc, key_min, label in (
+            ("E0", "E", "energy"),
+            ("A0", "A", "amplitude"),
+        ):
+            _compare_thc_vs_minimiser(
+                thc_res, min_res, key_thc, key_min,
+                label=f"{label} [thc vs iminuit, both_uncorr]",
+                cv=True, rs=True,
+            )
+            _compare_thc_vs_minimiser(
+                thc_res, lsq_res, key_thc, key_min,
+                label=f"{label} [thc vs lsqfit, both_uncorr]",
+                cv=True, rs=True,
+            )
