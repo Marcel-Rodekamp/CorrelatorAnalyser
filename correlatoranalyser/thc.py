@@ -478,7 +478,7 @@ def thc(
     # Fit strategy — flags only control the chi2 evaluation, not the algorithm
     central_value_fit: bool = True,
     central_value_fit_correlated: bool = False,
-    resample_fit: bool = False,
+    resample_fit: bool = True,
     resample_fit_correlated: bool = False,
     # THC algorithm parameters
     delta_t: int = 1,
