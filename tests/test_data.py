@@ -1407,3 +1407,244 @@ class TestBugRegressions:
         assert r._rwf_rspl is not None, (
             "rwf_rspl was silently dropped by __array_ufunc__"
         )
+
+# ═════════════════════════════════════════════════════════════════════════════
+# 19. real/imag interface
+# ═════════════════════════════════════════════════════════════════════════════
+
+class TestRealImag:
+    """
+    Tests for Data.real and Data.imag.
+
+    Interface (from data.py):
+        @property
+        def real(self) -> Data:
+            return Data.import_resamples(..., rspl=np.real(_rspl),
+                                            mean=np.real(_mean), ...)
+        @property
+        def imag(self) -> Data:
+            return Data.import_resamples(..., rspl=np.imag(_rspl),
+                                            mean=np.imag(_mean), ...)
+
+    Both raise RuntimeError in gvar mode (resample_type=None).
+    locked_mean is NOT forwarded — the returned Data recomputes mean from rspl.
+    rwf_rspl IS forwarded.
+    """
+
+    # ── known complex test data ───────────────────────────────────────────────
+    # rspl[nres, i] = (nres+1) + (i+1)*1j
+    #   rspl[0] = [1+1j, 1+2j, 1+3j]
+    #   rspl[1] = [2+1j, 2+2j, 2+3j]
+    #   rspl[2] = [3+1j, 3+2j, 3+3j]
+    _NBST = 3
+    _rspl = np.array(
+        [[(r + 1) + (i + 1) * 1j for i in range(3)] for r in range(3)],
+        dtype=complex,
+    )
+    # mean passed to import_resamples; since locked_mean is not forwarded,
+    # the returned Data will recompute its mean from rspl.
+    _mean = np.array([2.0 + 1j, 2.0 + 2j, 2.0 + 3j])   # mean over axis 0
+
+    @staticmethod
+    def _make(resample_type="bst", rwf=False):
+        rspl = TestRealImag._rspl.copy()
+        mean = TestRealImag._mean.copy()
+        rwf_rspl = np.ones(TestRealImag._NBST) if rwf else None
+        return Data.import_resamples(
+            resample_type = resample_type,
+            rspl          = rspl,
+            mean          = mean,
+            rwf_rspl      = rwf_rspl,
+            Nresample     = TestRealImag._NBST,
+            locked_mean   = True,   # lock the original; returned Data will NOT be locked
+        )
+
+    # ── .real — values ────────────────────────────────────────────────────────
+
+    def test_real_rspl_values_bst(self):
+        """real.rspl must equal np.real(rspl) exactly."""
+        d = self._make("bst")
+        np.testing.assert_array_equal(d.real.rspl, np.real(self._rspl))
+
+    def test_real_rspl_values_jkn(self):
+        """real.rspl must equal np.real(rspl) for jackknife too."""
+        d = self._make("jkn")
+        np.testing.assert_array_equal(d.real.rspl, np.real(self._rspl))
+
+    def test_real_mean_value(self):
+        """
+        When locked_mean is forwarded as True, real.mean returns np.real(mean)
+        directly without recomputing from rspl.
+        """
+        d = self._make("bst")
+        np.testing.assert_array_equal(d.real.mean, np.real(self._mean))
+
+    def test_real_dtype_is_real(self):
+        """real.rspl must have a real floating-point dtype."""
+        d = self._make("bst")
+        assert not np.issubdtype(d.real.rspl.dtype, np.complexfloating)
+
+    # ── .imag — values ────────────────────────────────────────────────────────
+
+    def test_imag_rspl_values_bst(self):
+        """imag.rspl must equal np.imag(rspl) exactly."""
+        d = self._make("bst")
+        np.testing.assert_array_equal(d.imag.rspl, np.imag(self._rspl))
+
+    def test_imag_rspl_values_jkn(self):
+        """imag.rspl must equal np.imag(rspl) for jackknife too."""
+        d = self._make("jkn")
+        np.testing.assert_array_equal(d.imag.rspl, np.imag(self._rspl))
+
+    def test_imag_mean_value(self):
+        """
+        When locked_mean is forwarded as True, imag.mean returns np.imag(mean)
+        directly without recomputing from rspl.
+        """
+        d = self._make("bst")
+        np.testing.assert_array_equal(d.imag.mean, np.imag(self._mean))
+
+    def test_imag_dtype_is_real(self):
+        """imag.rspl must have a real floating-point dtype."""
+        d = self._make("bst")
+        assert not np.issubdtype(d.imag.rspl.dtype, np.complexfloating)
+
+    # ── metadata preservation ─────────────────────────────────────────────────
+
+    def test_real_resample_type_preserved_bst(self):
+        d = self._make("bst")
+        assert d.real.resample_type == "bst"
+
+    def test_real_resample_type_preserved_jkn(self):
+        d = self._make("jkn")
+        assert d.real.resample_type == "jkn"
+
+    def test_real_nresample_preserved(self):
+        d = self._make("bst")
+        assert d.real.Nresample == self._NBST
+
+    def test_imag_resample_type_preserved(self):
+        d = self._make("bst")
+        assert d.imag.resample_type == "bst"
+
+    def test_imag_nresample_preserved(self):
+        d = self._make("bst")
+        assert d.imag.Nresample == self._NBST
+
+    def test_real_shape_preserved(self):
+        d = self._make("bst")
+        assert d.real.shape == d.shape
+
+    def test_imag_shape_preserved(self):
+        d = self._make("bst")
+        assert d.imag.shape == d.shape
+
+    # ── rwf_rspl forwarded ────────────────────────────────────────────────────
+
+    def test_real_forwards_rwf(self):
+        """rwf_rspl must be forwarded to the returned Data."""
+        d = self._make("bst", rwf=True)
+        assert d.real._rwf_rspl is not None
+        np.testing.assert_array_equal(d.real._rwf_rspl, np.ones(self._NBST))
+
+    def test_imag_forwards_rwf(self):
+        d = self._make("bst", rwf=True)
+        assert d.imag._rwf_rspl is not None
+        np.testing.assert_array_equal(d.imag._rwf_rspl, np.ones(self._NBST))
+
+    def test_real_no_rwf_when_none(self):
+        """Without rwf, real._rwf_rspl must be None."""
+        d = self._make("bst", rwf=False)
+        assert d.real._rwf_rspl is None
+
+    def test_imag_no_rwf_when_none(self):
+        d = self._make("bst", rwf=False)
+        assert d.imag._rwf_rspl is None
+
+    # ── locked_mean forwarded ─────────────────────────────────────────────────
+
+    def test_real_locked_mean_forwarded(self):
+        """real must forward locked_mean=True from the original Data."""
+        d = self._make("bst")
+        assert d.locked_mean is True
+        assert d.real.locked_mean is True
+
+    def test_imag_locked_mean_forwarded(self):
+        """imag must forward locked_mean=True from the original Data."""
+        d = self._make("bst")
+        assert d.locked_mean is True
+        assert d.imag.locked_mean is True
+
+    def test_real_locked_mean_false_when_original_unlocked(self):
+        """When original has locked_mean=False, real must also have locked_mean=False."""
+        d = Data.import_resamples(
+            resample_type = "bst",
+            rspl          = self._rspl.copy(),
+            mean          = self._mean.copy(),
+            Nresample     = self._NBST,
+            locked_mean   = False,
+        )
+        assert d.real.locked_mean is False
+
+    def test_imag_locked_mean_false_when_original_unlocked(self):
+        """When original has locked_mean=False, imag must also have locked_mean=False."""
+        d = Data.import_resamples(
+            resample_type = "bst",
+            rspl          = self._rspl.copy(),
+            mean          = self._mean.copy(),
+            Nresample     = self._NBST,
+            locked_mean   = False,
+        )
+        assert d.imag.locked_mean is False
+
+    # ── gvar mode raises ──────────────────────────────────────────────────────
+
+    def test_real_raises_in_gvar_mode(self):
+        """real must raise RuntimeError when resample_type is None."""
+        raw = np.random.default_rng(0).normal(1.0, 0.1, size=(50, 3))
+        d   = Data(resample_type=None, data=raw)
+        with pytest.raises(RuntimeError):
+            _ = d.real
+
+    def test_imag_raises_in_gvar_mode(self):
+        """imag must raise RuntimeError when resample_type is None."""
+        raw = np.random.default_rng(0).normal(1.0, 0.1, size=(50, 3))
+        d   = Data(resample_type=None, data=raw)
+        with pytest.raises(RuntimeError):
+            _ = d.imag
+
+    # ── consistency between real and imag ────────────────────────────────────
+
+    def test_real_imag_reconstruct_original_rspl(self):
+        """d.real.rspl + 1j * d.imag.rspl must recover the original complex rspl."""
+        d = self._make("bst")
+        np.testing.assert_array_equal(
+            d.real.rspl + 1j * d.imag.rspl, self._rspl,
+        )
+
+    def test_real_imag_abs_squared_consistent(self):
+        """Re² + Im² must equal |rspl|² element-wise."""
+        d   = self._make("bst")
+        lhs = d.real.rspl**2 + d.imag.rspl**2
+        rhs = np.abs(self._rspl)**2
+        np.testing.assert_allclose(lhs, rhs, rtol=1e-12)
+
+    # ── purely real input ─────────────────────────────────────────────────────
+
+    def test_real_of_real_rspl_unchanged(self):
+        """For real-valued float rspl, .real returns identical values."""
+        rspl = np.array([[1.0, 2.0], [3.0, 4.0], [5.0, 6.0]])
+        d    = Data.import_resamples(resample_type="bst", rspl=rspl, Nresample=3)
+        np.testing.assert_array_equal(d.real.rspl, rspl)
+
+    def test_imag_of_real_rspl_is_zero(self):
+        """For real-valued float rspl, .imag must be zero everywhere."""
+        rspl = np.array([[1.0, 2.0], [3.0, 4.0], [5.0, 6.0]])
+        d    = Data.import_resamples(resample_type="bst", rspl=rspl, Nresample=3)
+        np.testing.assert_array_equal(d.imag.rspl, np.zeros_like(rspl))
+
+    def test_imag_of_real_mean_is_zero(self):
+        """For real-valued float rspl, imag.mean must also be zero."""
+        rspl = np.array([[1.0, 2.0], [3.0, 4.0], [5.0, 6.0]])
+        d    = Data.import_resamples(resample_type="bst", rspl=rspl, Nresample=3)
+        np.testing.assert_array_equal(d.imag.mean, np.zeros(2))

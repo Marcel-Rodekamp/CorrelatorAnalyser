@@ -1167,6 +1167,41 @@ class Data:
         raise NotImplementedError
 
     # =================================================================================================================
+    # Complex Numbers
+    # =================================================================================================================
+
+    @property
+    def real(self) -> 'Data':
+        if self.resample_type is None:
+            raise RuntimeError("Complex Data without resmaple not implemented")
+
+        return Data.import_resamples(
+            resample_type=self.resample_type,
+            rspl=np.real(self._rspl),
+            mean=np.real(self._mean),
+            rwf_rspl=self._rwf_rspl,
+            Ndata=self.Ndata,
+            Nresample=self.Nresample,
+            locked_mean = self.locked_mean
+        )
+
+    @property
+    def imag(self) -> 'Data':
+        if self.resample_type is None:
+            raise RuntimeError("Complex Data without resmaple not implemented")
+
+        return Data.import_resamples(
+            resample_type=self.resample_type,
+            rspl=np.imag(self._rspl),
+            mean=np.imag(self._mean),
+            rwf_rspl=self._rwf_rspl,
+            Ndata=self.Ndata,
+            Nresample=self.Nresample,
+            locked_mean = self.locked_mean
+
+        )
+
+    # =================================================================================================================
     # Statistics
     # =================================================================================================================
 
