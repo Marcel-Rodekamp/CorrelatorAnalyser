@@ -554,8 +554,19 @@ def fit_adam_iminuit_hybrid(
                 print(f"Warning: prior for linear parameter '{key}' was ignored.")
 
     Nres        = ordinate.Nresample
-    has_grad    = hasattr(model, "grad")
+    has_grad = hasattr(model, "grad")
+    has_hess = has_grad and hasattr(model, "hessian")
     start_vals  = _get_p0(prior, p0)
+ 
+    if has_hess:
+        print("Using gradient and Hessian information from model.grad / model.hessian")
+    elif has_grad:
+        print("Using gradient information from model.grad")
+    elif hasattr(model, "hessian"):
+        print(
+            "Warning: model.hessian is present but model.grad is missing. "
+            "The analytic Hessian will not be used."
+        )
 
     if use_varproj:
         nl_params = [k for k in start_vals if k not in linear_params]
@@ -599,9 +610,11 @@ def fit_adam_iminuit_hybrid(
             )
         else:
             if correlated:
-                return _build_correlated_cost(x, y, cov_inv, model, nl_params, prior)
+                return _build_correlated_cost(
+                    x, y, cov_inv, model, nl_params, prior, has_grad, has_hess
+                )
             return _build_uncorrelated_cost(
-                x, y, 1.0 / ordinate.serr, model, nl_params, prior, has_grad
+                x, y, 1.0 / ordinate.serr, model, nl_params, prior, has_grad, has_hess 
             )
 
     # Convenience: choose the right executor based on the path.

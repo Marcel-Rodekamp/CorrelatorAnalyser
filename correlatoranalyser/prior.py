@@ -79,6 +79,19 @@ class Prior:
             return 2.0 * (np.log(theta) - self.mean) / (self.sdev ** 2 * theta)
 
     # ------------------------------------------------------------------
+    # Hessian
+    # ------------------------------------------------------------------
+
+    def hess(self, theta: float) -> float:
+        """Return d2(prior)/d(theta)2 — the second derivative of the prior contribution."""
+        if self.dist == "normal":
+            return 2.0 / self.sdev ** 2
+        else:  # log-normal
+            if theta <= 0:
+                return 0.0
+            return 2.0 * (1.0 + self.mean - np.log(theta)) / (self.sdev ** 2 * theta ** 2)
+
+    # ------------------------------------------------------------------
     # gvar interoperability
     # ------------------------------------------------------------------
 

@@ -13,7 +13,7 @@ from .fit_helper import _validate_inputs, _get_p0, _get_abscissa, _compute_cov_i
 # Cost function constructors
 # =============================================================================
 
-def _build_correlated_cost(abscissa, y_data, cov_inv, model, param_names, priors=None, model_has_grad=False):
+def _build_correlated_cost(abscissa, y_data, cov_inv, model, param_names, priors=None, model_has_grad=False, model_has_hess=False):
     """Correlated (full covariance) chi-squared cost function for iminuit."""
 
     def cost(*args):
@@ -42,16 +42,35 @@ def _build_correlated_cost(abscissa, y_data, cov_inv, model, param_names, priors
                     J[i] += priors[key].grad(params[key])
         return J
 
+    def hess(*args):
+        params  = dict(zip(param_names, args))
+        r       = y_data - model(abscissa, params)                  # (Ndata,)
+        J       = np.asarray(model.grad(abscissa, params))          # (Nparams, Ndata)
+        Hm      = np.asarray(model.hessian(abscissa, params))       # (Nparams, Nparams, Ndata)
+        Cinv_r  = cov_inv @ r                                       # (Ndata,)
+        # Gauss–Newton term:  2 J C⁻¹ Jᵀ
+        H_chi2  = 2.0 * np.einsum('ik,kl,jl->ij', J, cov_inv, J)
+        # Curvature correction:  -2 Hm[i,j,:] · (C⁻¹ r)
+        H_chi2 -= 2.0 * np.einsum('ijk,k->ij', Hm, Cinv_r)
+        if priors:
+            for i, key in enumerate(param_names):
+                if key in priors:
+                    H_chi2[i, i] += priors[key].hess(params[key])
+        return H_chi2
+
     cost.errordef = iminuit.Minuit.LEAST_SQUARES
     cost.ndata    = len(abscissa)
 
     if model_has_grad:
         cost.grad = grad
 
+    if model_has_hess:
+        cost.hess = hess
+
     return cost
 
 
-def _build_uncorrelated_cost(abscissa, y_data, sdev_inv, model, param_names, priors=None, model_has_grad=False):
+def _build_uncorrelated_cost(abscissa, y_data, sdev_inv, model, param_names, priors=None, model_has_grad=False, model_has_hess=False):
     """Uncorrelated (diagonal) chi-squared cost function for iminuit."""
 
     def cost(*args):
@@ -75,11 +94,30 @@ def _build_uncorrelated_cost(abscissa, y_data, sdev_inv, model, param_names, pri
                     J[i] += priors[key].grad(params[key])
         return J
 
+    def hess(*args):
+        params  = dict(zip(param_names, args))
+        r       = y_data - model(abscissa, params)                  # (Ndata,)
+        w       = sdev_inv ** 2                                     # (Ndata,)
+        J       = np.asarray(model.grad(abscissa, params))          # (Nparams, Ndata)
+        Hm      = np.asarray(model.hessian(abscissa, params))       # (Nparams, Nparams, Ndata)
+        # Gauss–Newton term:  2 J diag(w) Jᵀ
+        H_chi2  = 2.0 * np.einsum('ik,k,jk->ij', J, w, J)
+        # Curvature correction:  -2 Hm[i,j,:] * w * r
+        H_chi2 -= 2.0 * np.einsum('ijk,k,k->ij', Hm, w, r)
+        if priors:
+            for i, key in enumerate(param_names):
+                if key in priors:
+                    H_chi2[i, i] += priors[key].hess(params[key])
+        return H_chi2
+
     cost.errordef = iminuit.Minuit.LEAST_SQUARES
     cost.ndata    = len(abscissa)
 
     if model_has_grad:
         cost.grad = grad
+
+    if model_has_hess:
+        cost.hess = hess
 
     return cost
 
@@ -290,12 +328,21 @@ def fit_iminuit(
     _validate_inputs(abscissa, ordinate, model, prior, p0)
 
     Nres       = ordinate.Nresample
-    has_grad   = hasattr(model, "grad")
-    start_vals = _get_p0(prior, p0)
-    param_names = list(start_vals.keys())
 
-    if has_grad:
+    has_grad = hasattr(model, "grad")
+    has_hess = has_grad and hasattr(model, "hessian")
+    start_vals  = _get_p0(prior, p0)
+    param_names = list(start_vals.keys())
+ 
+    if has_hess:
+        print("Using gradient and Hessian information from model.grad / model.hessian")
+    elif has_grad:
         print("Using gradient information from model.grad")
+    elif hasattr(model, "hessian"):
+        print(
+            "Warning: model.hessian is present but model.grad is missing. "
+            "The analytic Hessian will not be used."
+        )
 
     # Pre-compute inverse covariance once if needed for any correlated fit
     cov_inv = LT = None
