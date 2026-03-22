@@ -39,9 +39,9 @@ fit_result = fit(
     # prior                      = prior,   # optional: supply priors instead of p0
     p0                           = p0,
     central_value_fit            = True,
-    central_value_fit_correlated = True,
+    central_value_fit_correlated = False,
     resample_fit                 = True,
-    resample_fit_correlated      = True,
+    resample_fit_correlated      = False,
 )
 
 # 4. Inspect the result
@@ -50,13 +50,14 @@ print(fit_result)
 
 ```
 FitResult[(1.0, 24.0), Ndata=24, resample:bst]:
-  χ²/dof [dof] = 0.966 [20]
-  p-value      = 0.501
-  AIC          = -18.6
-    A0:  1.514(15)
-    E0:  0.3017(15)
-    A1:  0.739(13)
-    dE1: 0.512(11)
+  χ²/dof [dof]   = 0.958 [20]
+  χ²/<χ²> [<χ²>] = 1.59 [12]
+  p-value        = 0.512
+  AIC            = -18.7
+    A0: 1.505(23)
+    E0: 0.3009(21)
+    A1: 0.748(19)
+    dE1: 0.505(18)
 ```
 
 Parameter values and uncertainties are available as `Data` objects:
@@ -80,6 +81,7 @@ All backends are accessed through the single `fit(backend=..., ...)` entry point
 | `"iminuit"` + `linear_params` | MIGRAD with variable projection (Golub–Pereyra) | Models with mixed linear/nonlinear parameters; reduces to nonlinear search space |
 | `"linear regression"` | Closed-form weighted least squares | Strictly linear models; no iterative minimiser |
 | `"hybrid:adam+iminuit"` | ADAM pre-optimisation → MIGRAD warm start | Highly non-convex or flat χ² landscapes (e.g. multi-exponential fits) where MIGRAD struggles from a cold start; also supports variable projection |
+| `"thc"` | Truncated Hankel Correlator Method | Two-point function fits, i.e. data represented by a linear combination of exponential |
 
 ### Priors
 
