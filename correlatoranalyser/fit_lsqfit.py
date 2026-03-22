@@ -16,12 +16,42 @@ from .fit_helper import _validate_inputs, _get_p0, _get_abscissa, _compute_cov_i
 # lsqfit argument builder
 # =============================================================================
 
+def _check_lsqfit_prior_coverage(prior, p0):
+    """
+    Raise ValueError when prior and p0 together cover different parameters.
+ 
+    Parameters
+    ----------
+    prior : dict[str, Prior] | None
+    p0    : dict
+        The *merged* start-value dict returned by ``_get_p0(prior, user_p0)``.
+        It already contains every parameter (prior-covered ones have prior.mean
+        merged in); what we check is whether any key in p0 has no Prior entry.
+    """
+    if prior is None:
+        return   # pure p0 path — always fine
+ 
+    uncovered = [k for k in p0 if k not in prior]
+    if uncovered:
+        raise ValueError(
+            "The lsqfit backend requires that every model parameter is covered "
+            "by the prior dict when a prior is supplied.  The following "
+            f"parameter(s) appear in p0 but have no prior entry: {uncovered}.\n"
+            "Options:\n"
+            "  • Add a Prior for each of those parameters, or\n"
+            "  • Remove the prior dict and use p0 only (no regularisation), or\n"
+            "  • Switch to backend='iminuit', which supports mixed "
+            "prior + p0 usage."
+        )
+
 def _build_lsqfit_args(abscissa, ordinate_gvar, model, prior, p0, correlated, svdcut, maxiter):
     """Return a kwargs dict ready to pass to lsqfit.nonlinear_fit."""
     args = {"fcn": model, "maxit": maxiter}
 
     if svdcut is not None:
         args["svdcut"] = svdcut
+
+    _check_lsqfit_prior_coverage(prior, p0)
 
     if prior is not None:
         args["prior"] = {
@@ -32,8 +62,8 @@ def _build_lsqfit_args(abscissa, ordinate_gvar, model, prior, p0, correlated, sv
             )
             for k in prior
         }
-    else:
-        args["p0"] = p0
+    if p0 is not None:
+        args["p0"] = p0 
 
     data_key = "data" if correlated else "udata"
     args[data_key] = (abscissa, ordinate_gvar)

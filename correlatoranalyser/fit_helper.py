@@ -33,10 +33,48 @@ def _validate_inputs(abscissa, ordinate, model, prior, p0):
 
 
 def _get_p0(prior, p0):
-    """Return a plain float dict of starting values, preferring prior means."""
+    r"""
+        Return a plain float dict of starting values.
+ 
+        Merges *prior* means and *p0* into a single dict so that **partial
+        coverage** is supported.  The rules are applied in order:
+ 
+        1. For every parameter in *prior*, use ``prior[k].mean`` as its start.
+        2. For every parameter in *p0*, override the value from step 1 (or add
+           it if the parameter has no prior at all).
+ 
+        Resulting behaviour per parameter:
+ 
+        ==============================  ==================  ========================
+        Coverage                        Start value         Regularised?
+        ==============================  ==================  ========================
+        prior only                      ``prior[k].mean``   yes
+        p0 only                         ``p0[k]``           no
+        both (same key)                 ``p0[k]``           yes (prior still active)
+        ==============================  ==================  ========================
+ 
+        This means a user can supply a custom starting point that differs from
+        the prior centre simply by including the key in *p0*.
+ 
+        Parameters
+        ----------
+        prior : dict[str, Prior] | None
+        p0    : dict | None
+ 
+        Returns
+        -------
+        dict[str, float]
+            Complete start-value dict covering all parameters from either source.
+    """
+    result: dict = {}
     if prior is not None:
-        return {k: prior[k].mean for k in prior}
-    return dict(p0)
+        for k, v in prior.items():
+            result[k] = v.mean          # default start: prior centre
+    if p0 is not None:
+        result.update(p0)               # p0 always wins
+    return result
+ 
+
 
 
 def _get_abscissa(abscissa, nres=None):
