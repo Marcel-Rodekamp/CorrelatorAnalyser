@@ -1824,7 +1824,7 @@ class Data:
 # =====================================================================================================================
 
 @implements(np.mean)
-def mean(a: Data, axis=None, dtype=None, out=None, keepdims=_NoValue, *, where=_NoValue) -> 'Data | np.ndarray | Number':
+def mean(a: Data, axis=None, dtype=None, out=None, keepdims=_NoValue, *, where=_NoValue) -> 'Data':
     if not isinstance(a, Data):
         raise ValueError(f"a is expected to be of type Data but is: {type(a)}")
 
@@ -1840,15 +1840,38 @@ def mean(a: Data, axis=None, dtype=None, out=None, keepdims=_NoValue, *, where=_
             return Data.import_gvar(result, Ndata=a.Ndata)
         return result
 
-    out_array: np.ndarray = np.mean(a._rspl, axis=axis, dtype=dtype, out=out,
-                                    keepdims=keepdims, where=where)
+    rspl_: np.ndarray = np.mean(
+        a.rspl, 
+        # _rspl always has the axis shifted by one due to the resample axis
+        # being stored in axis=0. 
+        # Here we don't want to average over resamples but rather average 
+        # one of the observable axis 
+        axis=axis+1 if axis is not None else None, 
+        dtype=dtype, 
+        out=out,
+        keepdims=keepdims, 
+        where=where
+    )
 
-    # axis==0 is the resample axis; averaging over it yields a plain array
-    if axis != 0:
-        return Data.import_resamples(
-            resample_type=a.resample_type,
-            rspl=out_array,
-            Ndata=a.Ndata,
-            Nresample=a.Nresample,
+    mean_: np.ndarray = np.mean(
+        a.mean, 
+        # _rspl always has the axis shifted by one due to the resample axis
+        # being stored in axis=0. 
+        # Here we don't want to average over resamples but rather average 
+        # one of the observable axis 
+        axis=axis, 
+        dtype=dtype, 
+        out=out,
+        keepdims=keepdims, 
+        where=where       
+    )
+
+    return Data.import_resamples(
+            resample_type = a.resample_type,
+            rspl          = rspl_,
+            mean          = mean_,
+            rwf_rspl      = a._rwf_rspl,
+            Ndata         = a.Ndata,
+            Nresample     = a.Nresample,
+            locked_mean   = a.locked_mean,
         )
-    return out_array

@@ -1107,23 +1107,16 @@ class TestNumpyInterop:
     # ── np.mean ───────────────────────────────────────────────────────────────
 
     def test_np_mean_axis1_returns_data(self, jkn):
-        r = np.mean(jkn, axis=1)
+        # average over the T axis 
+        r = np.mean(jkn, axis=0)  
+        print(r)
         assert isinstance(r, Data)
         assert r._rspl.shape == (N,)
 
     def test_np_mean_axis1_bst(self, bst):
-        r = np.mean(bst, axis=1)
+        r = np.mean(bst, axis=0)
         assert isinstance(r, Data)
         assert r._rspl.shape == (NBST,)
-
-    def test_np_mean_axis0_returns_array(self, jkn):
-        r = np.mean(jkn, axis=0)
-        assert isinstance(r, np.ndarray)
-        assert r.shape == (T,)
-
-    def test_np_mean_axis0_values(self, jkn):
-        r = np.mean(jkn, axis=0)
-        np.testing.assert_allclose(r, jkn.mean)
 
     # ── comparisons ───────────────────────────────────────────────────────────
 
