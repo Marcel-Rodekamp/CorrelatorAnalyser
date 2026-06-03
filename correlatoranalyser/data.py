@@ -167,11 +167,16 @@ class Data:
         new.locked_mean = locked_mean
         new.blocksize = None
 
-        new._gvar = g
+        if hasattr(g,'shape') or len(np.asarray(g)):
+            new._gvar = np.asarray(g)
+        else:
+            new._gvar = g
+        
         if mean is None:
             new._mean = gv.mean(new._gvar)
         else:
             new._mean = mean
+
 
         return new
 
@@ -1282,12 +1287,12 @@ class Data:
                     f"but _gvar has type {type(self._gvar)} / shape {getattr(self._gvar, 'shape', '(scalar)')}.")
             cov_mat = gv.evalcov(self._gvar)
             # Check for actual cross-covariance (off-diagonal entries)
-            off_diag = cov_mat - np.diag(np.diag(cov_mat))
-            if not np.any(off_diag):
-                raise RuntimeError(
-                    "gvar objects carry no cross-covariance information (all off-diagonal elements are zero). "
-                    "Operations that build correlations (e.g. combining correlated Data) will populate the "
-                    "off-diagonal. Use .serr for individual standard deviations.")
+            # off_diag = cov_mat - np.diag(np.diag(cov_mat))
+            # if not np.any(off_diag):
+            #     raise RuntimeError(
+            #         "gvar objects carry no cross-covariance information (all off-diagonal elements are zero). "
+            #         "Operations that build correlations (e.g. combining correlated Data) will populate the "
+            #         "off-diagonal. Use .serr for individual standard deviations.")
             return cov_mat
 
         if len(self._rspl.shape) != 2:
@@ -1400,6 +1405,44 @@ class Data:
         elif self.resample_type == "jkn":
             return (self._rspl - self.mean) * np.sqrt(self.Ndata - 1) + self.mean
         raise NotImplementedError
+
+    def delayed_binning(self, binsize:int) -> "Data":
+        """
+            Execute delayed binning on jackknifed data
+
+            let i = 0,1,..., N/bin_size be the leave-m-out jackknifes that will be reconstructed and k = 0,1,...,N.
+            Then the reconstructed jackknifes are
+
+            x_del[i] = mu + ((N-1)/(N-bin_size)) * ( {\sum_{b_i\in [i*bin_size, (i+1)*bin_size] } x[b_i]} - bin_size * mu )
+
+            where mu = 1/N sum_n x_n is the mean of the data.
+
+            The mean is simply copied, as it doesn't change via leave-m-out jackknife
+
+            Parameters
+            ----------
+
+            binsize: int 
+                Target bin size that will be reconstructed from the data 
+
+        """
+        if self.resample_type != "jkn":
+            raise RuntimeError(f"Delayed binning only possible with jackknife but data is {self}")
+
+        delayed_data: Data = Data.zeros(
+            resample_type = "jkn",
+            shape         = self.shape if len(self.shape) > 0 else None,
+            Ndata         = self.Ndata,
+            Nresample     = self.Nresample//binsize,
+            tag           = self.tag, 
+            locked_mean   = self.locked_mean
+        )
+
+        for i in range(delayed_data.Nresample):
+            delayed_data.rspl[i,...] = self.mean + (self.Nresample-1)/(self.Nresample-binsize) * (np.sum( self.rspl[i*binsize:(i+1)*binsize,...], axis=0) - binsize * self.mean )
+        delayed_data.mean = self.mean
+
+        return delayed_data
 
     # =================================================================================================================
     # Representations
@@ -1840,13 +1883,22 @@ def mean(a: Data, axis=None, dtype=None, out=None, keepdims=_NoValue, *, where=_
             return Data.import_gvar(result, Ndata=a.Ndata)
         return result
 
+    if isinstance(axis, int):
+        axis_rspl = axis + 1
+    elif isinstance(axis, (tuple,list)):
+        axis_rspl = tuple( a+1 for a in axis )
+    elif axis is None:
+        axis_rspl = None
+    else:
+        raise AttributeError(f"Couldn't hanlde axis of type {type(axis)} ({axis=}). Expecting type: int,tuple,list or None ")
+
     rspl_: np.ndarray = np.mean(
         a.rspl, 
         # _rspl always has the axis shifted by one due to the resample axis
         # being stored in axis=0. 
         # Here we don't want to average over resamples but rather average 
         # one of the observable axis 
-        axis=axis+1 if axis is not None else None, 
+        axis=axis_rspl, 
         dtype=dtype, 
         out=out,
         keepdims=keepdims, 
