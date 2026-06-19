@@ -21,6 +21,10 @@ def fit(
         from .fit_linear_regression import linear_regression
         return linear_regression( **kwargs )
 
+    elif backend == "constant":
+        from .fit_constant import fit_constant
+        return fit_constant( **kwargs )
+
     elif backend == "hybrid:adam+iminuit":
         from .fit_adam_iminuit_hybrid import fit_adam_iminuit_hybrid
         return fit_adam_iminuit_hybrid( **kwargs ) 
