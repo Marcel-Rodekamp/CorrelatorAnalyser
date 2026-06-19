@@ -129,7 +129,14 @@ def _run_adam(
             g = _numerical_gradient(cost, theta)
 
         # --- ADAM moment updates ---
-        m  = beta1 * m + (1.0 - beta1) * g
+        try:
+            m  = beta1 * m + (1.0 - beta1) * g
+        except Exception as e:
+            print(f"{m.shape=}")
+            print(f"{g.shape=}")
+            print(f"{theta0 =}")
+            print(f"{param_names=}")
+            raise e
         v  = beta2 * v + (1.0 - beta2) * g ** 2
 
         # Bias-corrected moments

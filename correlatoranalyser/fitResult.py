@@ -35,8 +35,12 @@ def _serialise_fcn(fcn: Callable) -> bytes:
     lambda functions defined at the REPL).
     """
     try:
-        src = inspect.getsource(fcn)
+        if hasattr(fcn, '__class__') and not inspect.isclass(fcn) and not inspect.isroutine(fcn):
+            src = inspect.getsource(fcn.__class__)
+        else:
+            src = inspect.getsource(fcn)
     except (OSError, TypeError) as exc:
+
         raise ValueError(
             f"Cannot serialise model function '{getattr(fcn, '__name__', fcn)}': "
             "source code is not available.  Define the model in a .py file "
@@ -46,7 +50,6 @@ def _serialise_fcn(fcn: Callable) -> bytes:
     # Dedent so that methods / nested functions round-trip correctly.
     return textwrap.dedent(src).encode("utf-8")
 
-
 def _deserialise_fcn(src_bytes: bytes, name: str) -> Callable | None:
     """
     Reconstruct a callable from its source bytes.
@@ -55,9 +58,12 @@ def _deserialise_fcn(src_bytes: bytes, name: str) -> Callable | None:
     the FitResult is still usable even without the model function.
     """
     src = src_bytes.decode("utf-8") if isinstance(src_bytes, (bytes, bytearray)) else src_bytes
-    ns: dict = {}
+    
+    import numpy as np
+    ns: dict = {"np": np} 
+
     try:
-        exec(compile(src, "<fitResult>", "exec"), ns)   # noqa: S102
+        exec(compile(src, "<fitResult>", "exec"), ns)
     except Exception as exc:
         warnings.warn(
             f"Could not reconstruct model function from stored source "
@@ -66,18 +72,29 @@ def _deserialise_fcn(src_bytes: bytes, name: str) -> Callable | None:
             stacklevel=2,
         )
         return None
+    # 1. First look for class instances 
+    classes = [v for v in ns.values() if isinstance(v, type)]
 
-    # The function we want is the last callable defined in the source.
+    if classes:
+        # using the last instance to instantiate 
+        model_class = classes[-1]
+        try:
+            return model_class() 
+        except TypeError:
+            # Case the model class requires arguments
+            return model_class
+            
+    # 2. Fallback: looking for callable functions
     candidates = [v for v in ns.values() if callable(v) and not isinstance(v, type)]
-    if not candidates:
-        warnings.warn(
-            "No callable found in stored model source.  FitResult.fcn will be None.",
-            RuntimeWarning,
-            stacklevel=2,
-        )
-        return None
-    return candidates[-1]
+    if candidates:
+        return candidates[-1]
 
+    warnings.warn(
+        "No callable found in stored model source.  FitResult.fcn will be None.",
+        RuntimeWarning,
+        stacklevel=2,
+    )
+    return None
 
 # =============================================================================
 # Internal helpers
@@ -236,21 +253,31 @@ class FitResult:
         if abscissa is None:
             abscissa = self.abscissa
 
-        cv_params = {k: v.mean for k, v in self.params.items()}
-        mean = self.fcn(abscissa, cv_params).astype(float)
-
-        out = Data.empty(
-            resample_type=self.resample_type,
-            shape=mean.shape,
-            Nresample=self.Nresample,
-            locked_mean=True,
-        )
-        out.mean = mean
-
         if self.has_resamples:
+
+            cv_params = {k: v.mean for k, v in self.params.items()}
+            mean = self.fcn(abscissa, cv_params).astype(float)
+
+            out = Data.empty(
+                resample_type=self.resample_type,
+                shape=mean.shape,
+                Nresample=self.Nresample,
+                locked_mean=True,
+            )
+            out.mean = mean
+
             for nres in range(self.Nresample):
                 rs_params = {k: v.rspl[nres] for k, v in self.params.items()}
                 out.rspl[nres] = self.fcn(abscissa, rs_params)
+
+        else:
+            cv_params = {k: gv.gvar(v.mean, self.params_hessian_err[k].mean  ) for k, v in self.params.items()}
+            res = self.fcn(abscissa, cv_params)
+
+            out = Data.import_gvar(
+                g = res,
+                locked_mean=True,
+            )
 
         return out
 
@@ -325,11 +352,18 @@ class FitResult:
         If cov is exact, this has an error of order 1/N. 
         If cov is estimated with error (1/sqrt(N)), this error is inhereted here.
         """
-        Nx = cov.shape[0]
-        M  = J @ W @ J.T                          # (Nparams, Nparams)
-        H  = J.T @ np.linalg.solve(M, J @ W)     # (Nx, Nx)
-        expected = np.trace(W @ (np.eye(Nx) - H) @ cov) + Npriors
-        return float(expected)
+        try:
+            Nx = cov.shape[0]
+            M  = J @ W @ J.T                          # (Nparams, Nparams)
+            H  = J.T @ np.linalg.solve(M, J @ W)     # (Nx, Nx)
+            expected = np.trace(W @ (np.eye(Nx) - H) @ cov) + Npriors
+            return float(expected)
+        except np.linalg.LinAlgError as e:
+            print(e)
+            return self.dof 
+        except Exception as e:
+            raise e 
+
 
     # ------------------------------------------------------------------
     # Representation
@@ -434,7 +468,7 @@ class FitResult:
             prior.serialize(grp, node=f"priors/{key}")
 
         # --- fit quality ---
-        for name, val in (("chi2", self.chi2), ("p_value", self.p_value), ("AIC", self.AIC)):
+        for name, val in (("chi2", self.chi2), ("expected_chi2", self.expected_chi2), ("p_value", self.p_value), ("AIC", self.AIC)):
             if isinstance(val, Data):
                 val.serialize(grp, node=name)
             elif val is not None:
@@ -519,7 +553,7 @@ class FitResult:
             }
 
         # fit quality
-        for name in ("chi2", "p_value", "AIC"):
+        for name in ("chi2", "expected_chi2", "p_value", "AIC"):
             val = _deserialise_scalar_or_data(grp, name)
             if val is not None:
                 setattr(out, name, val)
@@ -907,6 +941,72 @@ class FitResult:
             cov=cov,      # pass this in as a new argument
             W=weight_matrix,
             J=design_matrix.T,     # shape (Nparams, Nx) — already available
+            Npriors=0,
+        )
+
+        self._store_fit_quality(chi2, exp_chi2, nres)
+
+    def import_from_constant_fit(
+        self,
+        target_data: np.ndarray,
+        result_constant: np.ndarray,
+        weight_matrix: np.ndarray,
+        constant_name: str,
+        cov: np.ndarray,
+        nres: int | None = None,
+    ) -> None:
+        """
+        Import parameters and fit quality from the constant fit.
+
+        Gaussian error propagation is available.
+
+        Parameters
+        ----------
+        target_data : np.ndarray
+            The ordinate values that were fitted (mean or one resample).
+        result_constant : np.ndarray
+            Best-fit parameter, ordered like.
+        weight_matrix : np.ndarray, shape (N, N)
+            Weight matrix W = C^{-1}.
+        constant_name : str
+            Names of the fit parameters.
+        cov: np.ndarray 
+            The data covariance. This is used to compute the expected chi²
+        nres : int | None
+            Resample index.  ``None`` → central-value fit.
+        """
+
+        if self.fcn is None:
+            self.fcn = lambda x, p: np.full_like(x,p[constant_name])
+
+        if self.dof is None:
+            self.dof = self.Ndata - 1
+
+        # closed form gaussian error:
+        numerator_weights = np.sum(weight_matrix, axis=0) # This is 1^T @ W
+        variance_theta = (numerator_weights @ cov @ numerator_weights.T) / (np.sum(weight_matrix)**2)
+        sigma_theta = np.sqrt(variance_theta)
+        self._ensure_param(constant_name)
+        self._ensure_hessian_err(constant_name)
+        
+        if nres is None:
+            self.params[constant_name].mean             = result_constant
+            self.params_hessian_err[constant_name].mean = sigma_theta
+        else:
+            self.params[constant_name].rspl[nres]              = result_constant
+            self.params_hessian_err[constant_name].rspl[nres]  = sigma_theta
+
+        # Priors are not used in constant fits.
+        self.priors = {}
+
+        # chi2 = r^T W r
+        residuals = target_data - result_constant
+        chi2      = float(residuals.T @ weight_matrix @ residuals)
+
+        exp_chi2 = self.compute_expected_chi2(
+            cov=cov,      # pass this in as a new argument
+            W=weight_matrix,
+            J=np.asarray([ np.ones_like(target_data) ]), # shape (Nparams, Nx) — already available
             Npriors=0,
         )
 

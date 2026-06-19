@@ -228,6 +228,7 @@ def _run_minuit_varproj(least_square, p0, limits=None, maxiter = 10_000, tol = 0
     minuit.strategy = strategy
 
     minuit.migrad(ncall=maxiter)
+    minuit.hesse()
 
     # Resolve linear parameters at best-fit nonlinear values
     best_nl = {p: minuit.values[p] for p in least_square._nonlinear_params}
@@ -248,6 +249,11 @@ def _run_minuit_varproj(least_square, p0, limits=None, maxiter = 10_000, tol = 0
     AtA_inv = np.linalg.pinv(A.T @ A)
     cov_non_linear = minuit.covariance  
     
+    if cov_non_linear is None:
+        print(f"Is valid minimum: {minuit.fmin.is_valid}")
+        print(f"Has accurate covariance: {minuit.fmin.has_covariance}")
+        print(f"Is covariance pos-definite: {minuit.fmin.has_posdef_covar}")
+
     eps=1e-5
     dalpha_dbeta = np.zeros( (len(linear_param_names), len(nonlinear_param_names)) )
     for i, k in enumerate(nonlinear_param_names):
