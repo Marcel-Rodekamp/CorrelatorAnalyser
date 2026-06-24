@@ -1649,12 +1649,19 @@ class Data:
             if isinstance(value, Data):
                 if value.resample_type is not None:
                     raise ValueError("Cannot mix gvar mode with resample mode")
-                self._gvar[idx] = value._gvar
+                if isinstance(idx, tuple):
+                    self._gvar[*idx] = value._gvar
+                else:
+                    self._gvar[idx] = value._gvar
             elif isinstance(value, (np.ndarray, Number)):
                 # Assign as exact values (zero uncertainty)
-                self._gvar[idx] = gv.gvar(value, np.zeros_like(np.asarray(value, dtype=float)))
+                if isinstance(idx, tuple):
+                    self._gvar[*idx] = gv.gvar(value, np.zeros_like(np.asarray(value, dtype=float)))
+                else:
+                    self._gvar[idx] = gv.gvar(value, np.zeros_like(np.asarray(value, dtype=float)))
             else:
                 raise ValueError(f"Setting requires Data, np.ndarray, or Number but is: {type(value)}")
+
             self._mean = gv.mean(self._gvar)
             return
 
@@ -1665,11 +1672,21 @@ class Data:
             if self.resample_type != value.resample_type:
                 raise ValueError(
                     f"Setting requires same resample type: self({self.resample_type}) != value({value.resample_type})")
-            self._rspl[:, idx] = value._rspl
-            self._mean[idx] = value.mean
+
+            if isinstance(idx, tuple):
+                self._rspl[:, *idx] = value._rspl
+                self._mean[*idx] = value.mean
+            else:
+                self._rspl[:, idx] = value._rspl
+                self._mean[idx] = value.mean
+
         elif isinstance(value, (np.ndarray, Number)):
-            self._rspl[:, idx] = value
-            self._mean = np.mean(self._rspl, axis=0)
+            if isinstance(idx, tuple):
+                self._rspl[:, *idx] = value
+                self._mean = np.mean(self._rspl, axis=0)
+            else:
+                self._rspl[:, idx] = value
+                self._mean = np.mean(self._rspl, axis=0)
         else:
             raise ValueError(f"Setting requires Data, np.ndarray, or Number but is: {type(value)}")
 
