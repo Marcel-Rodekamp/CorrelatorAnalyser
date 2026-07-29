@@ -113,10 +113,15 @@ class FitState:
     def __repr__(self) -> str:
         lines = [f"FitState ({len(self)} fits, sort_by='{self.sort_by}'):"]
         for i, fit in enumerate(self.fit_results):
-            chi2_dof = fit.chi2.mean / fit.dof if fit.dof else float("nan")
+            if fit.has_resamples:
+                chi2_dof = fit.chi2.mean / fit.dof if fit.dof else float("nan")
+                AIC = fit.AIC.mean
+            else:
+                chi2_dof = fit.chi2 / fit.dof if fit.dof else float("nan")
+                AIC = fit.AIC
             keys     = ", ".join(fit.params.keys())
             lines.append(
-                f"  [{i}]  χ²/dof={chi2_dof:.3g}  AIC={fit.AIC.mean:.3g}"
+                f"  [{i}]  χ²/dof={chi2_dof:.3g}  AIC={AIC:.3g}"
                 f"  params=[{keys}]"
             )
         return "\n".join(lines)
