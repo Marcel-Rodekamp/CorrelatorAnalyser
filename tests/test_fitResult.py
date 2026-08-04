@@ -12,8 +12,9 @@ Test classes
 2. TestSerialization        — HDF5 round-trip for all field combinations
 3. TestEval                 — eval() on fit and new abscissa, with/without resamples
 4. TestAIC                  — AIC / AICc formula correctness and edge cases
-5. TestPValue               — compute_p_value (eq. 2.18 of arXiv:2209.14188)
-6. TestRepr                 — __repr__ smoke test and key field presence
+5. TestExpectedAIC          — expected AIC (dof -> expected_chi2 in the AIC formula)
+6. TestPValue               — compute_p_value (eq. 2.18 of arXiv:2209.14188)
+7. TestRepr                 — __repr__ smoke test and key field presence
 """
 
 from __future__ import annotations
@@ -85,6 +86,7 @@ def _minimal_cv_result(abscissa=None) -> FitResult:
     fr.p_value = 0.78
     fr.expected_p_value = 0.81
     fr.AIC     = -7.1
+    fr.expected_AIC = -7.4
 
     def model_linear(x, p):
         return p["m"] * x + p["b"]
@@ -119,13 +121,15 @@ def _minimal_resample_result(nbst=NBST) -> FitResult:
     pval_rspl   = np.clip(rng.uniform(0, 1, size=nbst), 1e-6, 1.0)
     aic_rspl    = rng.normal(-5.0, 1.0, size=nbst)
 
-    exp_pval_rspl = np.clip(rng.uniform(0, 1, size=nbst), 1e-6, 1.0)
+    exp_pval_rspl  = np.clip(rng.uniform(0, 1, size=nbst), 1e-6, 1.0)
+    exp_aic_rspl   = rng.normal(-5.3, 1.0, size=nbst)
 
     fr.chi2    = _make_quality_data(3.2, chi2_rspl, nbst)
     fr.p_value = _make_quality_data(0.78, pval_rspl, nbst)
     fr.expected_chi2 = _make_quality_data(NDATA-2, np.full_like(chi2_rspl, NDATA-2), nbst)
     fr.expected_p_value = _make_quality_data(0.81, exp_pval_rspl, nbst)
     fr.AIC     = _make_quality_data(-7.1, aic_rspl, nbst)
+    fr.expected_AIC = _make_quality_data(-7.4, exp_aic_rspl, nbst)
 
     def model_single_exp(t, p):
         return p["A"] * np.exp(-p["E"] * t)
@@ -267,7 +271,7 @@ class TestSerialization:
         assert out.params_hessian_err["b"].mean == pytest.approx(0.12)
 
     def test_cv_only_fit_quality_round_trip(self):
-        """chi2, p_value, expected_p_value, and AIC must round-trip as plain floats for CV-only."""
+        """chi2, p_value, expected_p_value, AIC, and expected_AIC must round-trip as plain floats for CV-only."""
         fr  = _minimal_cv_result()
         out = self._roundtrip(fr)
 
@@ -275,6 +279,7 @@ class TestSerialization:
         assert float(out.p_value)          == pytest.approx(0.78)
         assert float(out.expected_p_value) == pytest.approx(0.81)
         assert float(out.AIC)              == pytest.approx(-7.1)
+        assert float(out.expected_AIC)     == pytest.approx(-7.4)
 
     def test_cv_only_dof_round_trip(self):
         """dof must round-trip exactly as an integer."""
@@ -315,11 +320,11 @@ class TestSerialization:
             )
 
     def test_resample_fit_quality_round_trip(self):
-        """chi2 / p_value / expected_p_value / AIC rspl arrays must round-trip correctly."""
+        """chi2 / p_value / expected_p_value / AIC / expected_AIC rspl arrays must round-trip correctly."""
         fr  = _minimal_resample_result()
         out = self._roundtrip(fr)
 
-        for attr in ("chi2", "p_value", "expected_p_value", "AIC"):
+        for attr in ("chi2", "p_value", "expected_p_value", "AIC", "expected_AIC"):
             np.testing.assert_allclose(
                 getattr(out, attr).rspl,
                 getattr(fr,  attr).rspl,
@@ -660,7 +665,61 @@ class TestAIC:
 
 
 # =============================================================================
-# 5. compute_p_value (eq. 2.18 of arXiv:2209.14188)
+# 5. Expected AIC (dof -> expected_chi2 in the AIC formula)
+# =============================================================================
+
+class TestExpectedAIC:
+    """
+    Verify _compute_expected_AIC: same as _compute_AIC but with the naive
+    dof = d_K - k replaced by the Bruno & Sommer expected chi-squared.
+
+        <AIC>  = chi2 - 2*<chi2>
+        <AICc> = <AIC> + (2k² + 2k) / (d_K - k - 1)   [unchanged correction]
+    """
+
+    def _make_fr(self, nparams: int, ndata: int, aicc: bool = True) -> FitResult:
+        x  = np.arange(1, ndata + 1, dtype=float)
+        fr = FitResult(abscissa=x, AIC_small_sample_correction=aicc)
+        fr.dof = ndata - nparams
+        for i in range(nparams):
+            fr.params[f"p{i}"] = _make_param_data(float(i))
+        return fr
+
+    def test_expected_aic_no_correction_formula(self):
+        """Without AICc: <AIC> = chi2 - 2*<chi2>."""
+        fr = self._make_fr(nparams=2, ndata=8, aicc=False)
+        chi2, exp_chi2 = 4.0, 5.5
+        expected = chi2 - 2.0 * exp_chi2
+        assert fr._compute_expected_AIC(chi2, exp_chi2) == pytest.approx(expected)
+
+    def test_expected_aic_no_params_raises(self):
+        """_compute_expected_AIC must raise RuntimeError when no params have been added."""
+        x  = np.arange(1, 9, dtype=float)
+        fr = FitResult(abscissa=x)
+        fr.dof = 6
+        with pytest.raises(RuntimeError, match="Cannot compute expected AIC"):
+            fr._compute_expected_AIC(4.0, 6.0)
+
+    def test_store_fit_quality_computes_expected_aic(self):
+        """
+        _store_fit_quality must populate expected_AIC from chi2 and the
+        stored expected_chi2 (or its dof fallback) without requiring the
+        caller to pass it in separately.
+        """
+        fr = self._make_fr(nparams=2, ndata=8, aicc=False)
+        fr._store_fit_quality(chi2=4.0, expected_chi2=5.5, expected_p_value=None, nres=None)
+        assert fr.expected_AIC == pytest.approx(4.0 - 2.0 * 5.5)
+
+    def test_store_fit_quality_expected_aic_falls_back_to_dof(self):
+        """When expected_chi2 is None, expected_AIC must use self.dof like expected_chi2 does."""
+        fr = self._make_fr(nparams=2, ndata=8, aicc=False)
+        fr._store_fit_quality(chi2=4.0, expected_chi2=None, expected_p_value=None, nres=None)
+        assert fr.expected_chi2 == fr.dof
+        assert fr.expected_AIC == pytest.approx(4.0 - 2.0 * fr.dof)
+
+
+# =============================================================================
+# 6. compute_p_value (eq. 2.18 of arXiv:2209.14188)
 # =============================================================================
 
 class TestPValue:
@@ -735,7 +794,7 @@ class TestPValue:
 
 
 # =============================================================================
-# 6. __repr__
+# 7. __repr__
 # =============================================================================
 
 class TestRepr:
@@ -795,6 +854,19 @@ class TestRepr:
         fr = _minimal_cv_result()
         s  = repr(fr)
         assert "AIC" in s
+
+    def test_repr_contains_expected_aic(self):
+        """
+        An <AIC> line must appear in the repr right after the plain AIC,
+        mirroring the <χ²> / <p-value> convention.
+        """
+        fr = _minimal_cv_result()
+        s  = repr(fr)
+        assert "<AIC>" in s
+
+        aic_line     = next(l for l in s.splitlines() if l.strip().startswith("AIC"))
+        exp_aic_line = next(l for l in s.splitlines() if l.strip().startswith("<AIC>"))
+        assert s.index(aic_line) < s.index(exp_aic_line)
 
     def test_repr_shows_prior_tag_when_prior_set(self):
         """

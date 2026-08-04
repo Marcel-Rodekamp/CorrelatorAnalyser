@@ -201,6 +201,7 @@ class FitResult:
         self.AIC:     Data | float | None = None
         self.expected_chi2:Data | float | None = None
         self.expected_p_value: Data | float | None = None
+        self.expected_AIC: Data | float | None = None
 
         # Initialise Data containers when resample fits are requested.
         if self.has_resamples:
@@ -209,6 +210,7 @@ class FitResult:
             self.AIC     = Data.empty(resample_type=resample_type, shape=None, Nresample=Nresample, locked_mean=True)
             self.expected_chi2 = Data.empty(resample_type=resample_type, shape=None, Nresample=Nresample, locked_mean=True)
             self.expected_p_value = Data.empty(resample_type=resample_type, shape=None, Nresample=Nresample, locked_mean=True)
+            self.expected_AIC = Data.empty(resample_type=resample_type, shape=None, Nresample=Nresample, locked_mean=True)
 
         # Raw backend objects (not serialised).
         self.fit_output: Any = None                          # central value
@@ -287,6 +289,16 @@ class FitResult:
     # AIC
     # ------------------------------------------------------------------
 
+    def _aicc_correction(self, k: int, dK: int) -> float:
+        """Small-sample (AICc) correction term, shared by _compute_AIC and _compute_expected_AIC."""
+        denominator = dK - k - 1
+        if denominator <= 0:
+            raise RuntimeError(
+                f"AICc correction requires Ndata > Nparam + 1, "
+                f"but Ndata={dK}, Nparam={k}."
+            )
+        return (2.0 * k**2 + 2.0 * k) / denominator
+
     def _compute_AIC(self, chi2: float) -> float:
         """
         Akaike information criterion.
@@ -308,16 +320,34 @@ class FitResult:
         aic = chi2 + 2.0 * (k - dK)
 
         if self.AIC_small_sample_correction:
-            denominator = dK - k - 1
-            if denominator <= 0:
-                raise RuntimeError(
-                    f"AICc correction requires Ndata > Nparam + 1, "
-                    f"but Ndata={dK}, Nparam={k}."
-                )
-            aic += (2.0 * k**2 + 2.0 * k) / denominator
+            aic += self._aicc_correction(k, dK)
 
         return aic
-    
+
+    def _compute_expected_AIC(self, chi2: float, expected_chi2: float) -> float:
+        r"""
+        Expected AIC.
+
+        Same as :meth:`_compute_AIC` (arXiv:2305.19417, eq. 3), but with the
+        naive dof = d_K - k replaced by the Bruno & Sommer expected
+        chi-squared :math:`\langle\chi^2\rangle`, eq. (2.13) of
+        arXiv:2209.14188 (see :meth:`compute_expected_chi2`):
+
+            <AIC>  = chi2 - 2*<chi2>
+
+        """
+        if not self.params:
+            raise RuntimeError(
+                "Cannot compute expected AIC: no fit parameters have been stored yet."
+            )
+        k  = len(self.params)
+        dK = self.Ndata
+
+        aic = chi2 - 2.0 * expected_chi2
+
+        return aic
+
+
     # ------------------------------------------------------------------
     # Expected chi2
     # ------------------------------------------------------------------
@@ -474,6 +504,7 @@ class FitResult:
                 f"  p-value        = {self.p_value.mean:.3g}",
                 f"  <p-value>      = {self.expected_p_value.mean:.3g}",
                 f"  AIC            = {self.AIC.mean:.3g}",
+                f"  <AIC>          = {self.expected_AIC.mean:.3g}",
             ]
         else:
             lines = [
@@ -483,6 +514,7 @@ class FitResult:
                 f"  p-value      = {self.p_value:.3g}",
                 f"  <p-value>    = {self.expected_p_value:.3g}",
                 f"  AIC          = {self.AIC:.3g}",
+                f"  <AIC>        = {self.expected_AIC:.3g}",
             ]
     
         for key, p in self.params.items():
@@ -554,7 +586,7 @@ class FitResult:
             prior.serialize(grp, node=f"priors/{key}")
 
         # --- fit quality ---
-        for name, val in (("chi2", self.chi2), ("expected_chi2", self.expected_chi2), ("p_value", self.p_value), ("expected_p_value", self.expected_p_value), ("AIC", self.AIC)):
+        for name, val in (("chi2", self.chi2), ("expected_chi2", self.expected_chi2), ("p_value", self.p_value), ("expected_p_value", self.expected_p_value), ("AIC", self.AIC), ("expected_AIC", self.expected_AIC)):
             if isinstance(val, Data):
                 val.serialize(grp, node=name)
             elif val is not None:
@@ -639,7 +671,7 @@ class FitResult:
             }
 
         # fit quality
-        for name in ("chi2", "expected_chi2", "p_value", "expected_p_value", "AIC"):
+        for name in ("chi2", "expected_chi2", "p_value", "expected_p_value", "AIC", "expected_AIC"):
             val = _deserialise_scalar_or_data(grp, name)
             if val is not None:
                 setattr(out, name, val)
@@ -694,42 +726,39 @@ class FitResult:
     ) -> None:
         """
         Write chi2, expected chi2 (defaults to dof), p-value, expected
-        p-value (eq. 2.18 of arXiv:2209.14188; defaults to p-value), and
-        AIC for a central-value or resample fit.
+        p-value (eq. 2.18 of arXiv:2209.14188; defaults to p-value), AIC,
+        and expected AIC (dof -> expected chi2 in the AIC formula;
+        defaults to AIC) for a central-value or resample fit.
         """
-        p_val = float(gammaincc(self.dof / 2.0, chi2 / 2.0))
-        aic   = self._compute_AIC(chi2)
+        exp_chi2_val = expected_chi2 if expected_chi2 is not None else self.dof
+
+        p_val     = float(gammaincc(self.dof / 2.0, chi2 / 2.0))
+        aic       = self._compute_AIC(chi2)
         exp_p_val = expected_p_value if expected_p_value is not None else p_val
+        exp_aic   = self._compute_expected_AIC(chi2, exp_chi2_val)
 
         if nres is None:
             if self.has_resamples:
-                self.chi2.mean    = chi2
-                self.p_value.mean = p_val
-                self.AIC.mean     = aic
+                self.chi2.mean            = chi2
+                self.p_value.mean         = p_val
+                self.AIC.mean             = aic
                 self.expected_p_value.mean = exp_p_val
-                if expected_chi2 is not None:
-                    self.expected_chi2.mean = expected_chi2
-                else:
-                    self.expected_chi2.mean = self.dof
-
+                self.expected_chi2.mean   = exp_chi2_val
+                self.expected_AIC.mean    = exp_aic
             else:
-                self.chi2         = chi2
-                self.p_value      = p_val
-                self.AIC          = aic
-                self.expected_p_value = exp_p_val
-                if expected_chi2 is not None:
-                    self.expected_chi2 = expected_chi2
-                else:
-                    self.expected_chi2 = self.dof
+                self.chi2              = chi2
+                self.p_value           = p_val
+                self.AIC               = aic
+                self.expected_p_value  = exp_p_val
+                self.expected_chi2     = exp_chi2_val
+                self.expected_AIC      = exp_aic
         else:
-            self.chi2.rspl[nres]    = chi2
-            self.p_value.rspl[nres] = p_val
-            self.AIC.rspl[nres]     = aic
-            self.expected_p_value.rspl[nres] = exp_p_val
-            if expected_chi2 is not None:
-                self.expected_chi2.rspl[nres] = expected_chi2
-            else:
-                self.expected_chi2.rspl[nres] = self.dof
+            self.chi2.rspl[nres]              = chi2
+            self.p_value.rspl[nres]           = p_val
+            self.AIC.rspl[nres]               = aic
+            self.expected_p_value.rspl[nres]  = exp_p_val
+            self.expected_chi2.rspl[nres]     = exp_chi2_val
+            self.expected_AIC.rspl[nres]      = exp_aic
 
     def _init_resample_store(self) -> None:
         """Lazily create the per-resample raw-output list."""
