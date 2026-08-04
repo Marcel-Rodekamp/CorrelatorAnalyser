@@ -200,6 +200,7 @@ class FitResult:
         self.p_value: Data | float | None = None
         self.AIC:     Data | float | None = None
         self.expected_chi2:Data | float | None = None
+        self.expected_p_value: Data | float | None = None
 
         # Initialise Data containers when resample fits are requested.
         if self.has_resamples:
@@ -207,6 +208,7 @@ class FitResult:
             self.p_value = Data.empty(resample_type=resample_type, shape=None, Nresample=Nresample, locked_mean=True)
             self.AIC     = Data.empty(resample_type=resample_type, shape=None, Nresample=Nresample, locked_mean=True)
             self.expected_chi2 = Data.empty(resample_type=resample_type, shape=None, Nresample=Nresample, locked_mean=True)
+            self.expected_p_value = Data.empty(resample_type=resample_type, shape=None, Nresample=Nresample, locked_mean=True)
 
         # Raw backend objects (not serialised).
         self.fit_output: Any = None                          # central value
@@ -360,10 +362,92 @@ class FitResult:
             return float(expected)
         except np.linalg.LinAlgError as e:
             print(e)
-            return self.dof 
+            return self.dof
         except Exception as e:
-            raise e 
+            raise e
 
+    # ------------------------------------------------------------------
+    # p-value (eq. 2.18)
+    # ------------------------------------------------------------------
+    def compute_p_value(
+        self,
+        cov: np.ndarray,
+        W: np.ndarray,
+        J: np.ndarray,
+        chi2_obs: float,
+        Npriors: int = 0,
+        Nmc: int = 10_000,
+        seed: int = 0,
+    ) -> float:
+        r"""
+        Compute the quality-of-fit p-value for a fit with weight matrix W
+        on data with covariance C.
+
+        .. math::
+            Q(\chi^2_\mathrm{obs}, \nu) = P\Big(\sum_{j=1}^{N_\nu} \lambda_j(\nu)\, z_j^2 \ge \chi^2_\mathrm{obs}\Big),
+            \qquad z_j \sim \mathcal{N}(0,1)\ \text{i.i.d.}
+
+        where the :math:`\lambda_j(\nu)` are the strictly positive eigenvalues of
+
+        .. math::
+            \nu = C^{1/2} W (I - H) C^{1/2}
+
+        and H is the same hat matrix used in :meth:`compute_expected_chi2`
+        (H = J^T (J W J^T)^{-1} J W). J[i, j] = d model_j / d theta_i
+        (shape: Nparams x Nx). Note W here is the same bilinear weight
+        matrix as elsewhere in this class (chi2 = r^T W r); W(I-H) is
+        symmetric because W H is symmetric (H is self-adjoint w.r.t. the
+        W-inner product), so a single factor of W is needed here — unlike
+        the two factors of the weight operator in eq. (2.17) of the paper,
+        which is written in terms of a matrix square root W_paper with
+        W = W_paper^2.
+
+        This is inspired by
+            M. Bruno and R. Sommer,
+            On fits to correlated and auto-correlated data
+            arXiv:2209.14188
+        The form is equation 2.18. Q reduces to the standard incomplete-gamma
+        p-value (self.dof degrees of freedom) when W = C^{-1/2} exactly, but
+        is the correct quality-of-fit for arbitrary weight matrices W, e.g.
+        for uncorrelated fits.
+
+        Each prior contributes an extra unit eigenvalue, matching the
+        ``+Npriors`` term of :meth:`compute_expected_chi2`.
+
+        Q is estimated by Monte Carlo (as proposed in sect. 2.2 of the
+        paper): the statistical precision on Q is of order 1/sqrt(Nmc).
+        """
+        try:
+            Nx = cov.shape[0]
+            M  = J @ W @ J.T
+            H  = J.T @ np.linalg.solve(M, J @ W)
+
+            # eig(C^{1/2} X C^{1/2}) == eig(C X) for any square root of C,
+            # so the (symmetric) Cholesky factor avoids forming C^{1/2}.
+            L  = np.linalg.cholesky(cov)
+            nu = L.T @ (W @ (np.eye(Nx) - H)) @ L
+            nu = 0.5 * (nu + nu.T)
+
+            eigvals = np.linalg.eigvalsh(nu)
+            tol = eigvals.max() * 1e-10 if eigvals.size else 0.0
+            lambdas = eigvals[eigvals > tol]
+
+            if Npriors:
+                lambdas = np.concatenate([lambdas, np.ones(Npriors)])
+
+            if lambdas.size == 0:
+                return 1.0 if chi2_obs <= 0 else 0.0
+
+            rng     = np.random.default_rng(seed)
+            z       = rng.standard_normal(size=(Nmc, lambdas.size))
+            chi2_mc = (z**2) @ lambdas
+            return float(np.mean(chi2_mc >= chi2_obs))
+
+        except np.linalg.LinAlgError as e:
+            print(e)
+            return float(gammaincc(self.dof / 2.0, chi2_obs / 2.0))
+        except Exception as e:
+            raise e
 
     # ------------------------------------------------------------------
     # Representation
@@ -388,6 +472,7 @@ class FitResult:
                 f"  χ²/dof [dof]   = {self.chi2.mean / self.dof:.3g} [{self.dof}]",
                 f"  χ²/<χ²> [<χ²>] = {self.chi2.mean / self.expected_chi2.mean:.3g} [{self.expected_chi2.mean:.3g}]",
                 f"  p-value        = {self.p_value.mean:.3g}",
+                f"  <p-value>      = {self.expected_p_value.mean:.3g}",
                 f"  AIC            = {self.AIC.mean:.3g}",
             ]
         else:
@@ -396,6 +481,7 @@ class FitResult:
                 f"  χ²/dof [dof] = {self.chi2 / self.dof:.3g} [{self.dof}]",
                 f"  χ²/<χ²> [<χ²>] = {self.chi2 / self.expected_chi2:.3g} [{self.expected_chi2:.3g}]",
                 f"  p-value      = {self.p_value:.3g}",
+                f"  <p-value>    = {self.expected_p_value:.3g}",
                 f"  AIC          = {self.AIC:.3g}",
             ]
     
@@ -468,7 +554,7 @@ class FitResult:
             prior.serialize(grp, node=f"priors/{key}")
 
         # --- fit quality ---
-        for name, val in (("chi2", self.chi2), ("expected_chi2", self.expected_chi2), ("p_value", self.p_value), ("AIC", self.AIC)):
+        for name, val in (("chi2", self.chi2), ("expected_chi2", self.expected_chi2), ("p_value", self.p_value), ("expected_p_value", self.expected_p_value), ("AIC", self.AIC)):
             if isinstance(val, Data):
                 val.serialize(grp, node=name)
             elif val is not None:
@@ -553,7 +639,7 @@ class FitResult:
             }
 
         # fit quality
-        for name in ("chi2", "expected_chi2", "p_value", "AIC"):
+        for name in ("chi2", "expected_chi2", "p_value", "expected_p_value", "AIC"):
             val = _deserialise_scalar_or_data(grp, name)
             if val is not None:
                 setattr(out, name, val)
@@ -600,17 +686,27 @@ class FitResult:
                 self.lambda_eigs = None
 
     def _store_fit_quality(
-        self, chi2: float, expected_chi2: float | None, nres: int | None
+        self,
+        chi2: float,
+        expected_chi2: float | None,
+        expected_p_value: float | None,
+        nres: int | None,
     ) -> None:
-        """Write chi2, expected chi2 (defaults to dof), p-value, and AIC for a central-value or resample fit."""
+        """
+        Write chi2, expected chi2 (defaults to dof), p-value, expected
+        p-value (eq. 2.18 of arXiv:2209.14188; defaults to p-value), and
+        AIC for a central-value or resample fit.
+        """
         p_val = float(gammaincc(self.dof / 2.0, chi2 / 2.0))
         aic   = self._compute_AIC(chi2)
+        exp_p_val = expected_p_value if expected_p_value is not None else p_val
 
         if nres is None:
             if self.has_resamples:
                 self.chi2.mean    = chi2
                 self.p_value.mean = p_val
                 self.AIC.mean     = aic
+                self.expected_p_value.mean = exp_p_val
                 if expected_chi2 is not None:
                     self.expected_chi2.mean = expected_chi2
                 else:
@@ -619,7 +715,8 @@ class FitResult:
             else:
                 self.chi2         = chi2
                 self.p_value      = p_val
-                self.AIC          = aic               
+                self.AIC          = aic
+                self.expected_p_value = exp_p_val
                 if expected_chi2 is not None:
                     self.expected_chi2 = expected_chi2
                 else:
@@ -628,6 +725,7 @@ class FitResult:
             self.chi2.rspl[nres]    = chi2
             self.p_value.rspl[nres] = p_val
             self.AIC.rspl[nres]     = aic
+            self.expected_p_value.rspl[nres] = exp_p_val
             if expected_chi2 is not None:
                 self.expected_chi2.rspl[nres] = expected_chi2
             else:
@@ -761,14 +859,15 @@ class FitResult:
 
             J  = (model.grad(self.abscissa, cv) if hasattr(model, "grad") else _jacobian_fd(model, self.abscissa, cv))
 
-            exp_chi2 = self.compute_expected_chi2(
-                cov, W, J, Npriors=len(prior) if prior else 0
-            )
+            Npriors  = len(prior) if prior else 0
+            exp_chi2 = self.compute_expected_chi2(cov, W, J, Npriors=Npriors)
+            exp_pval = self.compute_p_value(cov, W, J, minuit.fval, Npriors=Npriors)
         else:
             exp_chi2 = self.dof
+            exp_pval = None
 
         # --- fit quality ---
-        self._store_fit_quality(minuit.fval, exp_chi2, nres)
+        self._store_fit_quality(minuit.fval, exp_chi2, exp_pval, nres)
 
         # --- raw backend object (not serialised) ---
         if nres is None:
@@ -847,16 +946,17 @@ class FitResult:
 
             J  = (nlf.fcn.grad(self.abscissa, cv) if hasattr(nlf.fcn, "grad") else _jacobian_fd(nlf.fcn, self.abscissa, cv))
 
-            exp_chi2 = self.compute_expected_chi2(
-                cov, W, J, Npriors=len(self.priors) if self.priors else 0
-            )
-        else: 
+            Npriors  = len(self.priors) if self.priors else 0
+            exp_chi2 = self.compute_expected_chi2(cov, W, J, Npriors=Npriors)
+            exp_pval = self.compute_p_value(cov, W, J, float(nlf.chi2), Npriors=Npriors)
+        else:
             exp_chi2 = self.dof
+            exp_pval = None
 
         # --- fit quality ---
         # lsqfit stores p-value in nlf.Q; we re-compute from chi2 for
         # consistency with the other backends.
-        self._store_fit_quality(float(nlf.chi2), exp_chi2, nres)
+        self._store_fit_quality(float(nlf.chi2), exp_chi2, exp_pval, nres)
 
         # --- raw backend object (not serialised) ---
         if nres is None:
@@ -943,8 +1043,15 @@ class FitResult:
             J=design_matrix.T,     # shape (Nparams, Nx) — already available
             Npriors=0,
         )
+        exp_pval = self.compute_p_value(
+            cov=cov,
+            W=weight_matrix,
+            J=design_matrix.T,
+            chi2_obs=chi2,
+            Npriors=0,
+        )
 
-        self._store_fit_quality(chi2, exp_chi2, nres)
+        self._store_fit_quality(chi2, exp_chi2, exp_pval, nres)
 
     def import_from_constant_fit(
         self,
@@ -1003,14 +1110,22 @@ class FitResult:
         residuals = target_data - result_constant
         chi2      = float(residuals.T @ weight_matrix @ residuals)
 
+        J = np.asarray([ np.ones_like(target_data) ])  # shape (Nparams, Nx) — already available
         exp_chi2 = self.compute_expected_chi2(
             cov=cov,      # pass this in as a new argument
             W=weight_matrix,
-            J=np.asarray([ np.ones_like(target_data) ]), # shape (Nparams, Nx) — already available
+            J=J,
+            Npriors=0,
+        )
+        exp_pval = self.compute_p_value(
+            cov=cov,
+            W=weight_matrix,
+            J=J,
+            chi2_obs=chi2,
             Npriors=0,
         )
 
-        self._store_fit_quality(chi2, exp_chi2, nres)
+        self._store_fit_quality(chi2, exp_chi2, exp_pval, nres)
 
     def import_from_thc(
         self,
@@ -1103,9 +1218,11 @@ class FitResult:
             self.lambda_eigs.rspl[nres] = extended_evals
     
         # ------------------------------------------------------------------
-        # expected_chi2: compute if model.grad is available and no nan params
+        # expected_chi2 / expected_p_value: compute if model.grad is
+        # available and no nan params
         # ------------------------------------------------------------------
         exp_chi2 = self.dof
+        exp_pval = None
         if (
             self.fcn is not None
             and hasattr(self.fcn, "grad")
@@ -1128,8 +1245,11 @@ class FitResult:
             exp_chi2 = self.compute_expected_chi2(
                 cov=cov, W=W_chi2, J=J, Npriors=0,
             )
-    
+            exp_pval = self.compute_p_value(
+                cov=cov, W=W_chi2, J=J, chi2_obs=chi2_val, Npriors=0,
+            )
+
         # ------------------------------------------------------------------
         # chi2, p-value, AIC via the standard _store_fit_quality helper
         # ------------------------------------------------------------------
-        self._store_fit_quality(chi2_val, exp_chi2, nres)
+        self._store_fit_quality(chi2_val, exp_chi2, exp_pval, nres)
