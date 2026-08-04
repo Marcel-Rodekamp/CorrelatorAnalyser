@@ -12,7 +12,9 @@ Test classes
 2. TestSerialization        — HDF5 round-trip for all field combinations
 3. TestEval                 — eval() on fit and new abscissa, with/without resamples
 4. TestAIC                  — AIC / AICc formula correctness and edge cases
-5. TestRepr                 — __repr__ smoke test and key field presence
+5. TestExpectedAIC          — expected AIC (dof -> expected_chi2 in the AIC formula)
+6. TestPValue               — compute_p_value (eq. 2.18 of arXiv:2209.14188)
+7. TestRepr                 — __repr__ smoke test and key field presence
 """
 
 from __future__ import annotations
@@ -24,6 +26,7 @@ from pathlib import Path
 import h5py
 import numpy as np
 import pytest
+from scipy.special import gammaincc
 
 from correlatoranalyser import Data
 from correlatoranalyser.fitResult import FitResult
@@ -81,7 +84,9 @@ def _minimal_cv_result(abscissa=None) -> FitResult:
     fr.chi2    = 3.2
     fr.expected_chi2 = 6
     fr.p_value = 0.78
+    fr.expected_p_value = 0.81
     fr.AIC     = -7.1
+    fr.expected_AIC = -7.4
 
     def model_linear(x, p):
         return p["m"] * x + p["b"]
@@ -116,10 +121,15 @@ def _minimal_resample_result(nbst=NBST) -> FitResult:
     pval_rspl   = np.clip(rng.uniform(0, 1, size=nbst), 1e-6, 1.0)
     aic_rspl    = rng.normal(-5.0, 1.0, size=nbst)
 
+    exp_pval_rspl  = np.clip(rng.uniform(0, 1, size=nbst), 1e-6, 1.0)
+    exp_aic_rspl   = rng.normal(-5.3, 1.0, size=nbst)
+
     fr.chi2    = _make_quality_data(3.2, chi2_rspl, nbst)
     fr.p_value = _make_quality_data(0.78, pval_rspl, nbst)
     fr.expected_chi2 = _make_quality_data(NDATA-2, np.full_like(chi2_rspl, NDATA-2), nbst)
+    fr.expected_p_value = _make_quality_data(0.81, exp_pval_rspl, nbst)
     fr.AIC     = _make_quality_data(-7.1, aic_rspl, nbst)
+    fr.expected_AIC = _make_quality_data(-7.4, exp_aic_rspl, nbst)
 
     def model_single_exp(t, p):
         return p["A"] * np.exp(-p["E"] * t)
@@ -261,13 +271,15 @@ class TestSerialization:
         assert out.params_hessian_err["b"].mean == pytest.approx(0.12)
 
     def test_cv_only_fit_quality_round_trip(self):
-        """chi2, p_value, and AIC must round-trip as plain floats for CV-only."""
+        """chi2, p_value, expected_p_value, AIC, and expected_AIC must round-trip as plain floats for CV-only."""
         fr  = _minimal_cv_result()
         out = self._roundtrip(fr)
 
-        assert float(out.chi2)    == pytest.approx(3.2)
-        assert float(out.p_value) == pytest.approx(0.78)
-        assert float(out.AIC)     == pytest.approx(-7.1)
+        assert float(out.chi2)             == pytest.approx(3.2)
+        assert float(out.p_value)          == pytest.approx(0.78)
+        assert float(out.expected_p_value) == pytest.approx(0.81)
+        assert float(out.AIC)              == pytest.approx(-7.1)
+        assert float(out.expected_AIC)     == pytest.approx(-7.4)
 
     def test_cv_only_dof_round_trip(self):
         """dof must round-trip exactly as an integer."""
@@ -308,11 +320,11 @@ class TestSerialization:
             )
 
     def test_resample_fit_quality_round_trip(self):
-        """chi2 / p_value / AIC rspl arrays must round-trip correctly."""
+        """chi2 / p_value / expected_p_value / AIC / expected_AIC rspl arrays must round-trip correctly."""
         fr  = _minimal_resample_result()
         out = self._roundtrip(fr)
 
-        for attr in ("chi2", "p_value", "AIC"):
+        for attr in ("chi2", "p_value", "expected_p_value", "AIC", "expected_AIC"):
             np.testing.assert_allclose(
                 getattr(out, attr).rspl,
                 getattr(fr,  attr).rspl,
@@ -653,7 +665,136 @@ class TestAIC:
 
 
 # =============================================================================
-# 5. __repr__
+# 5. Expected AIC (dof -> expected_chi2 in the AIC formula)
+# =============================================================================
+
+class TestExpectedAIC:
+    """
+    Verify _compute_expected_AIC: same as _compute_AIC but with the naive
+    dof = d_K - k replaced by the Bruno & Sommer expected chi-squared.
+
+        <AIC>  = chi2 - 2*<chi2>
+        <AICc> = <AIC> + (2k² + 2k) / (d_K - k - 1)   [unchanged correction]
+    """
+
+    def _make_fr(self, nparams: int, ndata: int, aicc: bool = True) -> FitResult:
+        x  = np.arange(1, ndata + 1, dtype=float)
+        fr = FitResult(abscissa=x, AIC_small_sample_correction=aicc)
+        fr.dof = ndata - nparams
+        for i in range(nparams):
+            fr.params[f"p{i}"] = _make_param_data(float(i))
+        return fr
+
+    def test_expected_aic_no_correction_formula(self):
+        """Without AICc: <AIC> = chi2 - 2*<chi2>."""
+        fr = self._make_fr(nparams=2, ndata=8, aicc=False)
+        chi2, exp_chi2 = 4.0, 5.5
+        expected = chi2 - 2.0 * exp_chi2
+        assert fr._compute_expected_AIC(chi2, exp_chi2) == pytest.approx(expected)
+
+    def test_expected_aic_no_params_raises(self):
+        """_compute_expected_AIC must raise RuntimeError when no params have been added."""
+        x  = np.arange(1, 9, dtype=float)
+        fr = FitResult(abscissa=x)
+        fr.dof = 6
+        with pytest.raises(RuntimeError, match="Cannot compute expected AIC"):
+            fr._compute_expected_AIC(4.0, 6.0)
+
+    def test_store_fit_quality_computes_expected_aic(self):
+        """
+        _store_fit_quality must populate expected_AIC from chi2 and the
+        stored expected_chi2 (or its dof fallback) without requiring the
+        caller to pass it in separately.
+        """
+        fr = self._make_fr(nparams=2, ndata=8, aicc=False)
+        fr._store_fit_quality(chi2=4.0, expected_chi2=5.5, expected_p_value=None, nres=None)
+        assert fr.expected_AIC == pytest.approx(4.0 - 2.0 * 5.5)
+
+    def test_store_fit_quality_expected_aic_falls_back_to_dof(self):
+        """When expected_chi2 is None, expected_AIC must use self.dof like expected_chi2 does."""
+        fr = self._make_fr(nparams=2, ndata=8, aicc=False)
+        fr._store_fit_quality(chi2=4.0, expected_chi2=None, expected_p_value=None, nres=None)
+        assert fr.expected_chi2 == fr.dof
+        assert fr.expected_AIC == pytest.approx(4.0 - 2.0 * fr.dof)
+
+
+# =============================================================================
+# 6. compute_p_value (eq. 2.18 of arXiv:2209.14188)
+# =============================================================================
+
+class TestPValue:
+    """
+    Verify FitResult.compute_p_value against the paper's known analytic
+    special case (eq. 4.10): for a fully correlated fit (W = C^-1 exactly),
+    Q(chi2_obs, nu) must reduce to the standard incomplete-gamma p-value
+    gammaincc(dof/2, chi2_obs/2), since nu then has exactly dof eigenvalues
+    equal to 1 and the rest 0.
+    """
+
+    @staticmethod
+    def _linear_setup(nparams=2, ndata=8, seed=42):
+        """A small linear model with a random SPD (correlated) covariance."""
+        rng = np.random.default_rng(seed)
+        x = np.linspace(1.0, float(ndata), ndata)
+        J = np.vstack([x**k for k in range(nparams)])  # (nparams, ndata)
+        A = rng.normal(size=(ndata, ndata))
+        cov = A @ A.T + ndata * np.eye(ndata)
+        return J, cov
+
+    def test_correlated_fit_matches_analytic_gammaincc(self):
+        """For W = C^-1, Q(chi2_obs, nu) must match gammaincc(dof/2, chi2_obs/2)."""
+        J, cov = self._linear_setup()
+        W  = np.linalg.inv(cov)
+        fr = FitResult()
+        fr.dof = cov.shape[0] - J.shape[0]
+
+        for chi2_obs in (2.0, 6.0, 10.0, 20.0):
+            Q_mc = fr.compute_p_value(cov, W, J, chi2_obs, Nmc=300_000)
+            Q_analytic = float(gammaincc(fr.dof / 2.0, chi2_obs / 2.0))
+            assert Q_mc == pytest.approx(Q_analytic, abs=5e-3)
+
+    def test_priors_shift_p_value_like_extra_dof(self):
+        """
+        Npriors extra unit eigenvalues must shift Q the same way as adding
+        Npriors to dof in the analytic gammaincc formula (correlated-fit case).
+        """
+        J, cov = self._linear_setup()
+        W  = np.linalg.inv(cov)
+        fr = FitResult()
+        fr.dof = cov.shape[0] - J.shape[0]
+
+        chi2_obs = 8.0
+        Q_mc = fr.compute_p_value(cov, W, J, chi2_obs, Npriors=2, Nmc=300_000)
+        Q_analytic = float(gammaincc((fr.dof + 2) / 2.0, chi2_obs / 2.0))
+        assert Q_mc == pytest.approx(Q_analytic, abs=5e-3)
+
+    def test_uncorrelated_weight_gives_valid_probability(self):
+        """
+        For an arbitrary (non-inverse-covariance) weight matrix, Q must
+        still be a valid probability in [0, 1].
+        """
+        J, cov = self._linear_setup()
+        W  = np.diag(1.0 / np.diag(cov))  # uncorrelated weight
+        fr = FitResult()
+        fr.dof = cov.shape[0] - J.shape[0]
+
+        for chi2_obs in (2.0, 6.0, 10.0, 20.0):
+            Q = fr.compute_p_value(cov, W, J, chi2_obs, Nmc=50_000)
+            assert 0.0 <= Q <= 1.0
+
+    def test_zero_chi2_gives_p_value_one(self):
+        """chi2_obs = 0 must give Q = 1 (certain to observe chi2 >= 0)."""
+        J, cov = self._linear_setup()
+        W  = np.linalg.inv(cov)
+        fr = FitResult()
+        fr.dof = cov.shape[0] - J.shape[0]
+
+        Q = fr.compute_p_value(cov, W, J, 0.0, Nmc=50_000)
+        assert Q == pytest.approx(1.0, abs=1e-6)
+
+
+# =============================================================================
+# 7. __repr__
 # =============================================================================
 
 class TestRepr:
@@ -694,11 +835,38 @@ class TestRepr:
         s  = repr(fr)
         assert "p-value" in s or "p_value" in s
 
+    def test_repr_contains_expected_p_value(self):
+        """
+        An <p-value> line (eq. 2.18 of arXiv:2209.14188) must appear in the
+        repr right after the plain p-value, mirroring the <χ²> convention
+        used for expected_chi2.
+        """
+        fr = _minimal_cv_result()
+        s  = repr(fr)
+        assert "<p-value>" in s
+
+        p_line     = next(l for l in s.splitlines() if l.strip().startswith("p-value"))
+        exp_p_line = next(l for l in s.splitlines() if l.strip().startswith("<p-value>"))
+        assert s.index(p_line) < s.index(exp_p_line)
+
     def test_repr_contains_aic(self):
         """AIC must appear in the repr."""
         fr = _minimal_cv_result()
         s  = repr(fr)
         assert "AIC" in s
+
+    def test_repr_contains_expected_aic(self):
+        """
+        An <AIC> line must appear in the repr right after the plain AIC,
+        mirroring the <χ²> / <p-value> convention.
+        """
+        fr = _minimal_cv_result()
+        s  = repr(fr)
+        assert "<AIC>" in s
+
+        aic_line     = next(l for l in s.splitlines() if l.strip().startswith("AIC"))
+        exp_aic_line = next(l for l in s.splitlines() if l.strip().startswith("<AIC>"))
+        assert s.index(aic_line) < s.index(exp_aic_line)
 
     def test_repr_shows_prior_tag_when_prior_set(self):
         """
