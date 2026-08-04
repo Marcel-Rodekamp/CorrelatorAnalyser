@@ -1407,8 +1407,8 @@ class Data:
         raise NotImplementedError
 
     def delayed_binning(self, binsize:int) -> "Data":
-        """
-            Execute delayed binning on jackknifed data
+        r"""
+           Execute delayed binning on jackknifed data
 
             let i = 0,1,..., N/bin_size be the leave-m-out jackknifes that will be reconstructed and k = 0,1,...,N.
             Then the reconstructed jackknifes are
