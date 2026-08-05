@@ -793,6 +793,48 @@ class FitResult:
         else:
             self.cost_history_rspl[nres] = np.asarray(cost_history)
 
+    def _build_jacobian(
+        self,
+        model: Callable,
+        cv: dict[str, float],
+        variable_projection: dict[str, float] | None,
+    ) -> np.ndarray:
+        r"""
+        Full parameter Jacobian ``J[i, j] = d model_j / d theta_i`` at *cv*.
+
+        ``compute_expected_chi2`` / ``compute_p_value`` need the sensitivity
+        directions of **all** fitted parameters — the hat matrix
+        :math:`H = J^T (J W J^T)^{-1} J W` must project onto the full model
+        subspace.
+
+        By convention ``model.grad`` returns the derivatives with respect to
+        the *nonlinear* parameters only, because that is what the
+        variable-projection cost function needs.  So when variable projection
+        is in use, the rows belonging to the linear parameters have to be added
+        back here; they are simply the design-matrix columns
+        ``d model / d A_k = model(x, {..., A_k: 1, A_l != k: 0})``.
+
+        Without this the hat matrix would project onto too small a subspace and
+        the expected chi² (and hence the expected p-value and AIC) would be
+        systematically too large.
+        """
+        if not hasattr(model, "grad"):
+            return _jacobian_fd(model, self.abscissa, cv)
+
+        rows = np.asarray(model.grad(self.abscissa, cv), dtype=float)
+        if rows.size == 0:
+            rows = rows.reshape(0, np.asarray(model(self.abscissa, cv)).size)
+
+        if variable_projection:
+            lin_keys = list(variable_projection)
+            lin_rows = np.empty((len(lin_keys), rows.shape[-1]), dtype=float)
+            for i, key in enumerate(lin_keys):
+                test = {**cv, **{k: 0.0 for k in lin_keys}, key: 1.0}
+                lin_rows[i] = np.asarray(model(self.abscissa, test), dtype=float)
+            rows = np.vstack([rows, lin_rows]) if rows.shape[0] else lin_rows
+
+        return rows
+
     def import_from_iminuit(
         self,
         minuit: Any,
@@ -886,7 +928,7 @@ class FitResult:
                 for k in self.params
             }
 
-            J  = (model.grad(self.abscissa, cv) if hasattr(model, "grad") else _jacobian_fd(model, self.abscissa, cv))
+            J = self._build_jacobian(model, cv, variable_projection)
 
             Npriors  = len(prior) if prior else 0
             exp_chi2 = self.compute_expected_chi2(cov, W, J, Npriors=Npriors)
