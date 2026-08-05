@@ -11,6 +11,26 @@ from .fitResult import FitResult
 from .fit_helper import _validate_inputs, _get_p0, _get_abscissa, _compute_cov_inv, _jacobian_fd
 
 # =============================================================================
+# Module-level constants
+# =============================================================================
+
+# Relative singular-value cutoff used when solving the linear sub-problem of
+# the variable projection.  Directions of the (weighted) design matrix whose
+# singular value falls below _VARPROJ_RCOND * sigma_max are discarded and the
+# minimum-norm solution is returned for them.
+#
+# This must be solved through the SVD of A and *not* through the normal
+# equations A^T A: forming A^T A squares the condition number, so a design
+# matrix with cond(A) ~ 1e6 already loses all significant digits in
+# cond(A^T A) ~ 1e12.  For nearly-degenerate models (e.g. a two-exponential
+# ansatz whose energy gap runs to zero, where two columns of A become
+# numerically identical) the roundoff of the normal equations turns a *flat*
+# chi2 direction into a spurious local minimum, and the minimiser happily
+# reports convergence at a point that is pure numerical noise.
+_VARPROJ_RCOND: float = 1e-10
+
+
+# =============================================================================
 # Variable-projection cost function constructors
 # =============================================================================
 
@@ -46,11 +66,8 @@ def _build_varproj_uncorrelated_cost(abscissa, y_data, sdev_inv, model, nonlinea
         return A * w[:, None], w * y
 
     def _solve(A, b):
-        try:
-            return np.linalg.solve(A.T @ A, A.T @ b)
-        except np.linalg.LinAlgError:
-            coeffs, *_ = np.linalg.lstsq(A, b, rcond=1e-9)
-            return coeffs
+        coeffs, *_ = np.linalg.lstsq(A, b, rcond=_VARPROJ_RCOND)
+        return coeffs
 
     def cost(*nl_values):
         nl_dict = dict(zip(nonlinear_params, nl_values))
@@ -137,11 +154,8 @@ def _build_varproj_correlated_cost(abscissa, y_data, cov_inv, model, nonlinear_p
 
 
     def _solve(A, b):
-        try:
-            return np.linalg.solve(A.T @ A, A.T @ b)
-        except np.linalg.LinAlgError:
-            coeffs, *_ = np.linalg.lstsq(A, b, rcond=1e-9)
-            return coeffs
+        coeffs, *_ = np.linalg.lstsq(A, b, rcond=_VARPROJ_RCOND)
+        return coeffs
 
     def cost(*nl_values):
         nl_dict = dict(zip(nonlinear_params, nl_values))
