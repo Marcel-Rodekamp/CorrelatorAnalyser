@@ -232,7 +232,8 @@ class FitResult:
             raise RuntimeError(
                 "Cannot determine Ndata: abscissa has not been set."
             )
-        return int(np.prod(self.abscissa.shape))
+        #return int(np.prod(self.abscissa.shape))
+        return int( self.abscissa.shape[-1] )
 
     # ------------------------------------------------------------------
     # Evaluation
